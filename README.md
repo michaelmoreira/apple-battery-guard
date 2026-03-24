@@ -1,0 +1,1 @@
+# apple-battery-guard
