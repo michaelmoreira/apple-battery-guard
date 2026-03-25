@@ -1,6 +1,6 @@
 [Unit]
 Description=Apple Battery Guard — charge threshold manager for MacBooks on Linux
-Documentation=https://github.com/moreira/apple-battery-guard
+Documentation=https://github.com/michaelmoreira/apple-battery-guard
 After=multi-user.target
 Wants=multi-user.target
 

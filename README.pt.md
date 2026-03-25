@@ -454,16 +454,20 @@ O serviço usa `Type=notify` com watchdog — se o daemon travar, o systemd rein
 ### Como são os logs
 
 ```
-Mar 25 10:00:01 host apple-battery-guard[1234]: battery detected: BAT0
-Mar 25 10:00:01 host apple-battery-guard[1234]: threshold applied: 80%
-Mar 25 10:00:01 host apple-battery-guard[1234]: ready
-Mar 25 10:00:31 host apple-battery-guard[1234]: threshold ok: 80%
-Mar 25 10:01:01 host apple-battery-guard[1234]: threshold ok: 80%
+Mar 25 11:27:31 macbook systemd[1]: Starting Apple Battery Guard...
+Mar 25 11:27:31 macbook apple-battery-guard[52127]: [INFO  abg] a iniciar daemon (threshold=80%)
+Mar 25 11:27:31 macbook apple-battery-guard[52127]: [INFO  abg::daemon] socket a escutar em /run/apple-battery-guard/daemon.sock
+Mar 25 11:27:31 macbook apple-battery-guard[52127]: [INFO  abg::daemon] threshold definido para 80%
+Mar 25 11:27:31 macbook systemd[1]: Started Apple Battery Guard.
+# A cada 30s:
+Mar 25 11:28:01 macbook apple-battery-guard[52127]: [INFO  abg::daemon] threshold ok: 80%
 # No full charge day:
-Mar 25 10:00:01 host apple-battery-guard[1234]: full charge day active, threshold: 100%
+Mar 25 11:27:31 macbook apple-battery-guard[52127]: [INFO  abg::daemon] full charge day ativo, threshold: 100%
 # Após resume de suspend:
-Mar 25 14:32:10 host apple-battery-guard[1234]: threshold reapplied after resume: 80%
+Mar 25 14:32:10 macbook apple-battery-guard[52127]: [INFO  abg::daemon] threshold redefinido após resume: 80%
 ```
+
+O daemon usa aproximadamente **400 KB de RAM** em estado estável.
 
 ---
 
@@ -534,6 +538,19 @@ START_CHARGE_THRESH_BAT0=0
 STOP_CHARGE_THRESH_BAT0=80
 ```
 Ou desativa a gestão de bateria do tlp e deixa o `apple-battery-guard` tratar disso exclusivamente.
+
+---
+
+### Comando `abg` não encontrado ou autocorrigido pelo zsh
+
+Se o zsh perguntar `correct 'abg' to 'ab'?`, responde `n` ou adiciona isto ao `~/.zshrc` para suprimir permanentemente:
+
+```bash
+echo "CORRECT_IGNORE='abg'" >> ~/.zshrc
+source ~/.zshrc
+```
+
+Em alternativa, usa o caminho completo: `/usr/bin/abg status`.
 
 ---
 

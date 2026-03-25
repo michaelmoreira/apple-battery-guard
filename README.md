@@ -454,16 +454,20 @@ The service uses `Type=notify` with a watchdog — if the daemon hangs, systemd 
 ### What the Logs Look Like
 
 ```
-Mar 25 10:00:01 host apple-battery-guard[1234]: battery detected: BAT0
-Mar 25 10:00:01 host apple-battery-guard[1234]: threshold applied: 80%
-Mar 25 10:00:01 host apple-battery-guard[1234]: ready
-Mar 25 10:00:31 host apple-battery-guard[1234]: threshold ok: 80%
-Mar 25 10:01:01 host apple-battery-guard[1234]: threshold ok: 80%
+Mar 25 11:27:31 macbook systemd[1]: Starting Apple Battery Guard...
+Mar 25 11:27:31 macbook apple-battery-guard[52127]: [INFO  abg] a iniciar daemon (threshold=80%)
+Mar 25 11:27:31 macbook apple-battery-guard[52127]: [INFO  abg::daemon] socket a escutar em /run/apple-battery-guard/daemon.sock
+Mar 25 11:27:31 macbook apple-battery-guard[52127]: [INFO  abg::daemon] threshold definido para 80%
+Mar 25 11:27:31 macbook systemd[1]: Started Apple Battery Guard.
+# Every 30s:
+Mar 25 11:28:01 macbook apple-battery-guard[52127]: [INFO  abg::daemon] threshold ok: 80%
 # On full charge day:
-Mar 25 10:00:01 host apple-battery-guard[1234]: full charge day active, threshold: 100%
+Mar 25 11:27:31 macbook apple-battery-guard[52127]: [INFO  abg::daemon] full charge day ativo, threshold: 100%
 # On resume from suspend:
-Mar 25 14:32:10 host apple-battery-guard[1234]: threshold reapplied after resume: 80%
+Mar 25 14:32:10 macbook apple-battery-guard[52127]: [INFO  abg::daemon] threshold redefinido após resume: 80%
 ```
+
+The daemon uses approximately **400 KB of RAM** at steady state.
 
 ---
 
@@ -534,6 +538,19 @@ START_CHARGE_THRESH_BAT0=0
 STOP_CHARGE_THRESH_BAT0=80
 ```
 Or disable tlp's battery management and let `apple-battery-guard` handle it exclusively.
+
+---
+
+### `abg` command not found or autocorrected by zsh
+
+If zsh asks `correct 'abg' to 'ab'?`, answer `n` or add this to `~/.zshrc` to permanently suppress it:
+
+```bash
+echo "CORRECT_IGNORE='abg'" >> ~/.zshrc
+source ~/.zshrc
+```
+
+Alternatively, use the full path: `/usr/bin/abg status`.
 
 ---
 
