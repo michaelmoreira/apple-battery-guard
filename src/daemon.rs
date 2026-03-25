@@ -23,7 +23,6 @@ pub struct DaemonState {
     pub error: Option<String>,
 }
 
-
 /// Ponto de entrada do daemon. Bloqueia até receber SIGTERM/SIGINT.
 pub fn run(config: Config) -> Result<(), DaemonError> {
     let battery = Battery::detect().map_err(DaemonError::Battery)?;
@@ -52,6 +51,15 @@ pub fn run(config: Config) -> Result<(), DaemonError> {
         }
     });
 
+    // Monitor udev: notifica o loop principal via apply_now quando há evento power_supply
+    // (resume de suspend, ligação/desligação do carregador, etc.)
+    let apply_now = Arc::new(AtomicBool::new(false));
+    thread::spawn({
+        let apply_now = Arc::clone(&apply_now);
+        let running = Arc::clone(&running);
+        move || run_udev_monitor(apply_now, running)
+    });
+
     // Aplica threshold imediatamente no arranque
     apply_threshold(&battery, &config, &state);
 
@@ -69,6 +77,11 @@ pub fn run(config: Config) -> Result<(), DaemonError> {
             let step = remaining.min(Duration::from_secs(1));
             thread::sleep(step);
             remaining = remaining.saturating_sub(step);
+            // Evento udev recebido: sair do sleep para aplicar threshold imediatamente
+            if apply_now.swap(false, Ordering::AcqRel) {
+                log::debug!("uevent power_supply: a aplicar threshold imediatamente");
+                break;
+            }
         }
 
         if !running.load(Ordering::Acquire) {
@@ -152,6 +165,125 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
+// ── Monitor udev via netlink ───────────────────────────────────────────────────
+
+/// Escuta eventos do kernel via NETLINK_KOBJECT_UEVENT.
+/// Quando deteta `SUBSYSTEM=power_supply`, acende `apply_now` para que o loop
+/// principal aplique o threshold imediatamente (ex: após resume de suspend).
+///
+/// Fallback gracioso: se o socket não puder ser criado (permissões, kernel sem
+/// suporte), regista um aviso e retorna — o daemon continua com polling normal.
+fn run_udev_monitor(apply_now: Arc<AtomicBool>, running: Arc<AtomicBool>) {
+    // SAFETY: socket() retorna um fd gerido por nós; fechado explicitamente no final.
+    // SOCK_CLOEXEC evita leaks para processos filhos; SOCK_NONBLOCK evita bloqueio.
+    // Protocolo 15 = NETLINK_KOBJECT_UEVENT (constante do kernel, estável desde 2.6).
+    let fd = unsafe {
+        libc::socket(
+            libc::AF_NETLINK,
+            libc::SOCK_RAW | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
+            libc::NETLINK_KOBJECT_UEVENT,
+        )
+    };
+
+    if fd < 0 {
+        log::warn!(
+            "udev monitor: socket() falhou ({}); a usar apenas polling",
+            std::io::Error::last_os_error()
+        );
+        return;
+    }
+
+    // SAFETY: sockaddr_nl zeroed é um valor inicial válido; nl_groups=1 é o
+    // multicast group para KOBJECT_UEVENT (definido em <linux/netlink.h>).
+    let bound = unsafe {
+        let mut addr: libc::sockaddr_nl = std::mem::zeroed();
+        addr.nl_family = libc::AF_NETLINK as libc::sa_family_t;
+        addr.nl_pid = 0;
+        addr.nl_groups = 1;
+        libc::bind(
+            fd,
+            &addr as *const libc::sockaddr_nl as *const libc::sockaddr,
+            std::mem::size_of::<libc::sockaddr_nl>() as libc::socklen_t,
+        )
+    };
+
+    if bound < 0 {
+        log::warn!(
+            "udev monitor: bind() falhou ({}); a usar apenas polling",
+            std::io::Error::last_os_error()
+        );
+        // SAFETY: fd válido — obtido acima com socket() bem-sucedido.
+        unsafe { libc::close(fd) };
+        return;
+    }
+
+    log::debug!("udev monitor ativo (NETLINK_KOBJECT_UEVENT)");
+
+    let mut buf = [0u8; 4096];
+
+    while running.load(Ordering::Acquire) {
+        // SAFETY: recv() com buffer de tamanho fixo; MSG_DONTWAIT + SOCK_NONBLOCK
+        // garantem retorno imediato (EAGAIN) quando não há dados pendentes.
+        let n = unsafe {
+            libc::recv(
+                fd,
+                buf.as_mut_ptr() as *mut libc::c_void,
+                buf.len(),
+                libc::MSG_DONTWAIT,
+            )
+        };
+
+        if n < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::WouldBlock {
+                thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+            // EINTR — syscall interrompida por sinal, retentar
+            if err.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            log::error!("udev monitor: recv() falhou: {err}");
+            break;
+        }
+
+        // Payload uevent: strings separadas por '\0', ex:
+        // "add@/devices/...\0ACTION=add\0SUBSYSTEM=power_supply\0..."
+        let has_power_supply = buf[..n as usize]
+            .split(|&b| b == 0)
+            .any(|token| token == b"SUBSYSTEM=power_supply");
+
+        if has_power_supply {
+            log::debug!("udev monitor: evento power_supply detetado");
+            apply_now.store(true, Ordering::Release);
+        }
+    }
+
+    // SAFETY: fd válido e aberto — fechar antes de sair da thread.
+    unsafe { libc::close(fd) };
+    log::debug!("udev monitor: thread terminada");
+}
+
+// ── Cliente de socket (CLI) ────────────────────────────────────────────────────
+
+/// Conecta ao socket do daemon e devolve a resposta JSON de estado.
+/// Retorna `None` se o daemon não estiver disponível ou não responder.
+pub fn query_socket(socket_path: &str) -> Option<String> {
+    let mut stream = UnixStream::connect(socket_path).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+    stream.write_all(b"status\n").ok()?;
+
+    let mut line = String::new();
+    BufReader::new(&stream).read_line(&mut line).ok()?;
+
+    let trimmed = line.trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
 // ── Unix socket ───────────────────────────────────────────────────────────────
 
 /// Protocolo simples de linha: cliente envia comando, servidor responde em JSON.
@@ -180,8 +312,8 @@ fn run_socket_server(
             .map_err(|e| DaemonError::Socket(format!("criar diretório socket: {e}")))?;
     }
 
-    let listener = UnixListener::bind(path)
-        .map_err(|e| DaemonError::Socket(format!("bind {path}: {e}")))?;
+    let listener =
+        UnixListener::bind(path).map_err(|e| DaemonError::Socket(format!("bind {path}: {e}")))?;
 
     // Restringir acesso ao socket (owner + group apenas)
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o660))
@@ -345,7 +477,10 @@ mod tests {
     #[test]
     fn effective_threshold_full_charge_day_disabled() {
         let mut cfg = config_with_threshold(80);
-        cfg.full_charge = FullChargeConfig { enabled: false, weekday: Weekday::Sunday };
+        cfg.full_charge = FullChargeConfig {
+            enabled: false,
+            weekday: Weekday::Sunday,
+        };
         // Mesmo que hoje seja domingo, full_charge está desativado
         assert_eq!(effective_threshold(&cfg), 80);
     }
@@ -383,6 +518,24 @@ mod tests {
         assert!(json.contains(r#""capacity":null"#));
         assert!(json.contains(r#""status":null"#));
         assert!(json.contains(r#""threshold":null"#));
+    }
+
+    #[test]
+    fn uevent_power_supply_detected() {
+        let payload = b"add@/devices/LNXSYSTM:00\0ACTION=add\0SUBSYSTEM=power_supply\0DEVPATH=/power_supply/BAT0\0";
+        let found = payload
+            .split(|&b| b == 0)
+            .any(|token| token == b"SUBSYSTEM=power_supply");
+        assert!(found);
+    }
+
+    #[test]
+    fn uevent_unrelated_subsystem_ignored() {
+        let payload = b"change@/devices/pci0000:00\0ACTION=change\0SUBSYSTEM=pci\0";
+        let found = payload
+            .split(|&b| b == 0)
+            .any(|token| token == b"SUBSYSTEM=power_supply");
+        assert!(!found);
     }
 
     #[test]

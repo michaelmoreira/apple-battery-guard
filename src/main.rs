@@ -56,7 +56,10 @@ fn main() {
 
     match cli.command {
         Command::Daemon => {
-            log::info!("a iniciar daemon (threshold={}%)", cfg.battery.charge_end_threshold);
+            log::info!(
+                "a iniciar daemon (threshold={}%)",
+                cfg.battery.charge_end_threshold
+            );
             if let Err(e) = daemon::run(cfg) {
                 eprintln!("Erro no daemon: {e}");
                 std::process::exit(1);
@@ -64,25 +67,19 @@ fn main() {
         }
 
         Command::Status => {
-            match battery::Battery::detect() {
-                Ok(bat) => match bat.status() {
-                    Ok(s) => {
-                        println!("Bateria:   {}%", s.capacity);
-                        println!("Estado:    {}", s.status);
-                        match s.charge_control_end_threshold {
-                            Some(t) => println!("Threshold: {t}%"),
-                            None => println!("Threshold: não suportado pelo kernel"),
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Erro ao ler bateria: {e}");
-                        std::process::exit(1);
-                    }
-                },
-                Err(e) => {
-                    eprintln!("Bateria não detetada: {e}");
-                    std::process::exit(1);
+            // Tenta ler estado do daemon via socket (não requer root)
+            if let Some(json) = daemon::query_socket(&cfg.daemon.socket_path) {
+                if let Some((cap, st, thr)) = parse_status_json(&json) {
+                    println!("Bateria:   {cap}%");
+                    println!("Estado:    {st}");
+                    println!("Threshold: {thr}%");
+                } else {
+                    // JSON recebido mas campos ausentes (daemon a arrancar?) — sysfs fallback
+                    read_status_from_sysfs();
                 }
+            } else {
+                // Daemon não disponível — leitura direta do sysfs
+                read_status_from_sysfs();
             }
         }
 
@@ -109,20 +106,118 @@ fn main() {
             );
         }
 
-        Command::Set { threshold } => {
-            match battery::Battery::detect() {
-                Ok(bat) => match bat.set_charge_threshold(threshold) {
-                    Ok(()) => println!("Threshold definido para {threshold}%"),
-                    Err(e) => {
-                        eprintln!("Erro ao definir threshold: {e}");
-                        std::process::exit(1);
-                    }
-                },
+        Command::Set { threshold } => match battery::Battery::detect() {
+            Ok(bat) => match bat.set_charge_threshold(threshold) {
+                Ok(()) => println!("Threshold definido para {threshold}%"),
                 Err(e) => {
-                    eprintln!("Bateria não detetada: {e}");
+                    eprintln!("Erro ao definir threshold: {e}");
                     std::process::exit(1);
                 }
+            },
+            Err(e) => {
+                eprintln!("Bateria não detetada: {e}");
+                std::process::exit(1);
+            }
+        },
+    }
+}
+
+/// Lê o estado da bateria diretamente do sysfs e imprime no formato padrão.
+/// Usado como fallback quando o daemon não está disponível.
+fn read_status_from_sysfs() {
+    match battery::Battery::detect() {
+        Ok(bat) => match bat.status() {
+            Ok(s) => {
+                println!("Bateria:   {}%", s.capacity);
+                println!("Estado:    {}", s.status);
+                match s.charge_control_end_threshold {
+                    Some(t) => println!("Threshold: {t}%"),
+                    None => println!("Threshold: não suportado pelo kernel"),
+                }
+            }
+            Err(e) => {
+                eprintln!("Erro ao ler bateria: {e}");
+                std::process::exit(1);
+            }
+        },
+        Err(e) => {
+            eprintln!("Bateria não detetada: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Extrai (capacity, status, threshold) do JSON de estado do daemon.
+/// Formato esperado: `{"capacity":75,"status":"Discharging","threshold":80,...}`
+/// Implementação sem serde_json para manter zero dependências desnecessárias.
+fn parse_status_json(json: &str) -> Option<(u8, String, u8)> {
+    fn extract_num(json: &str, key: &str) -> Option<u8> {
+        let needle = format!("\"{}\":", key);
+        let start = json.find(&needle)? + needle.len();
+        let rest = json[start..].trim_start();
+        if rest.starts_with("null") {
+            return None;
+        }
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        if end == 0 {
+            return None;
+        }
+        rest[..end].parse().ok()
+    }
+
+    fn extract_str(json: &str, key: &str) -> Option<String> {
+        let needle = format!("\"{}\":\"", key);
+        let start = json.find(&needle)? + needle.len();
+        let mut result = String::new();
+        let mut chars = json[start..].chars();
+        loop {
+            match chars.next()? {
+                '"' => break,
+                '\\' => match chars.next()? {
+                    '"' => result.push('"'),
+                    '\\' => result.push('\\'),
+                    c => {
+                        result.push('\\');
+                        result.push(c);
+                    }
+                },
+                c => result.push(c),
             }
         }
+        Some(result)
+    }
+
+    let capacity = extract_num(json, "capacity")?;
+    let status = extract_str(json, "status")?;
+    let threshold = extract_num(json, "threshold")?;
+    Some((capacity, status, threshold))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_status_json_normal() {
+        let json = r#"{"capacity":75,"status":"Discharging","threshold":80,"last_poll":1000000,"error":null}"#;
+        let result = parse_status_json(json).unwrap();
+        assert_eq!(result.0, 75);
+        assert_eq!(result.1, "Discharging");
+        assert_eq!(result.2, 80);
+    }
+
+    #[test]
+    fn parse_status_json_null_capacity_returns_none() {
+        let json = r#"{"capacity":null,"status":null,"threshold":null,"last_poll":0,"error":null}"#;
+        assert!(parse_status_json(json).is_none());
+    }
+
+    #[test]
+    fn parse_status_json_escaped_status() {
+        let json = r#"{"capacity":50,"status":"Not \"charging\"","threshold":80,"last_poll":0,"error":null}"#;
+        let result = parse_status_json(json).unwrap();
+        assert_eq!(result.1, r#"Not "charging""#);
     }
 }

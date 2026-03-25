@@ -60,6 +60,28 @@ cargo fmt --check            # verificar formatação
 - **Sysfs com fallback gracioso** — erros de I/O nunca devem crashar o daemon
 - **Testes obrigatórios** para `battery.rs` e `config.rs` — usar ficheiros temporários para simular sysfs
 
+## Release workflow
+
+Após implementar funcionalidades ou correções, o processo de release é:
+
+1. **Bump de versão** — atualizar `Cargo.toml` e `packaging/PKGBUILD` (campo `pkgver`)
+2. **Commit semântico** — ex: `feat: ...`, `fix: ...`, `docs: ...`
+3. **Tag e push para GitHub**:
+   ```bash
+   git tag v<versão>
+   git push origin main --tags
+   ```
+4. **SHA256 do tarball** — após o push, obter o hash do tarball de release do GitHub:
+   ```bash
+   curl -sL https://github.com/michaelmoreira/apple-battery-guard/archive/v<versão>.tar.gz | sha256sum
+   ```
+5. **Atualizar AUR** — em `apple-battery-guard/PKGBUILD`:
+   - Sincronizar com `packaging/PKGBUILD` (versão, sha256sums, package())
+   - Regenerar `.SRCINFO`: `makepkg --printsrcinfo > .SRCINFO`
+   - Commit e push: `git add PKGBUILD .SRCINFO && git commit -m "..." && git push`
+
+O diretório `apple-battery-guard/` é o clone do repositório AUR (`aur.archlinux.org/apple-battery-guard.git`).
+
 ## Comportamento do daemon
 
 - Polling a cada 30s (configurável em `[daemon] interval_secs`)

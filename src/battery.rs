@@ -131,9 +131,7 @@ impl Battery {
 
     /// Verifica se o kernel suporta `charge_control_end_threshold`.
     pub fn supports_threshold(&self) -> bool {
-        self.base_path
-            .join("charge_control_end_threshold")
-            .exists()
+        self.base_path.join("charge_control_end_threshold").exists()
     }
 
     // ── helpers internos ──────────────────────────────────────────────────────
@@ -166,7 +164,13 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    fn fake_battery(dir: &TempDir, name: &str, capacity: u8, status: &str, threshold: Option<u8>) -> PathBuf {
+    fn fake_battery(
+        dir: &TempDir,
+        name: &str,
+        capacity: u8,
+        status: &str,
+        threshold: Option<u8>,
+    ) -> PathBuf {
         let bat = dir.path().join(name);
         fs::create_dir_all(&bat).unwrap();
         fs::write(bat.join("type"), "Battery\n").unwrap();
@@ -233,7 +237,8 @@ mod tests {
         fake_battery(&dir, "BAT0", 60, "Charging", Some(100));
         let bat = Battery::detect_in(dir.path()).unwrap();
         bat.set_charge_threshold(80).unwrap();
-        let written = fs::read_to_string(bat.base_path.join("charge_control_end_threshold")).unwrap();
+        let written =
+            fs::read_to_string(bat.base_path.join("charge_control_end_threshold")).unwrap();
         assert_eq!(written.trim(), "80");
     }
 

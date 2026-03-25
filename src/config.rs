@@ -154,10 +154,12 @@ impl Config {
     }
 }
 
-
 #[allow(dead_code)] // Serialize só é construído por Config::save
 pub enum ConfigError {
-    Io { path: PathBuf, source: std::io::Error },
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     Parse(String),
     Serialize(String),
     Validation(String),

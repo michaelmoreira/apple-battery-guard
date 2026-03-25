@@ -58,7 +58,10 @@ fn sd_notify_abstract(name: &str, msg: &str) {
     unsafe {
         let fd = libc::socket(libc::AF_UNIX, libc::SOCK_DGRAM, 0);
         if fd < 0 {
-            log::debug!("sd_notify: socket() falhou: {}", std::io::Error::last_os_error());
+            log::debug!(
+                "sd_notify: socket() falhou: {}",
+                std::io::Error::last_os_error()
+            );
             return;
         }
 

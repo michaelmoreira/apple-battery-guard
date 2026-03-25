@@ -71,19 +71,26 @@ The `applesmc` driver on recent kernels (≥ 5.4) exposes the `charge_control_en
 ## How It Works
 
 ```
-┌─────────────────────────────────────────────┐
-│                  abg daemon                  │
-│                                              │
-│  ┌──────────┐    ┌──────────┐  ┌─────────┐  │
-│  │ scheduler│───▶│ battery  │-▶│  sysfs  │  │
-│  │  (30s)   │    │  module  │  │ /sys/.. │  │
-│  └──────────┘    └──────────┘  └─────────┘  │
-│                                              │
-│  ┌──────────────────────────────────────┐   │
-│  │         Unix socket server            │   │
-│  │  /run/apple-battery-guard/daemon.sock │   │
-│  └──────────────────────────────────────┘   │
-└──────────────────┬──────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│                    abg daemon                     │
+│                                                   │
+│  ┌──────────┐    ┌──────────┐    ┌─────────────┐  │
+│  │ scheduler│───▶│ battery  │───▶│    sysfs    │  │
+│  │  (30s)   │    │  module  │    │ /sys/class/ │  │
+│  └────▲─────┘    └──────────┘    │ power_supply│  │
+│       │                          └─────────────┘  │
+│  ┌────┴──────────────────────────────────────┐   │
+│  │  udev monitor (NETLINK_KOBJECT_UEVENT)    │   │
+│  │  detects power_supply events and triggers │   │
+│  │  immediate reapplication (suspend/resume, │   │
+│  │  charger plug/unplug)                     │   │
+│  └────────────────────────────────────────────┘   │
+│                                                   │
+│  ┌──────────────────────────────────────────┐    │
+│  │          Unix socket server              │    │
+│  │  /run/apple-battery-guard/daemon.sock    │    │
+│  └──────────────────────────────────────────┘    │
+└──────────────────┬───────────────────────────────┘
                    │ sd_notify / watchdog
               ┌────▼─────┐
               │ systemd   │
@@ -91,10 +98,11 @@ The `applesmc` driver on recent kernels (≥ 5.4) exposes the `charge_control_en
 ```
 
 1. The daemon starts and **immediately applies** the configured threshold.
-2. Every 30 seconds (configurable) it checks whether the threshold is correct and reapplies if needed. This guards against other tools or resume-from-suspend events resetting the value.
-3. It communicates with systemd via `sd_notify` (Type=notify + watchdog).
-4. It exposes current state via a **Unix socket** — the CLI reads from it without requiring root.
-5. It supports a **"full charge day"**: once a week the battery charges to 100% for calibration.
+2. The **udev monitor** listens for `power_supply` kernel events via netlink (NETLINK_KOBJECT_UEVENT). When the machine wakes from suspend, or a charger is plugged/unplugged, the threshold is reapplied **immediately** — without waiting for the next polling cycle.
+3. Every 30 seconds (configurable) it checks and reapplies the threshold as an additional safety net.
+4. It communicates with systemd via `sd_notify` (Type=notify + watchdog).
+5. It exposes current state via a **Unix socket** — `abg status` reads from here without requiring root. Falls back to direct sysfs read if the daemon is not running.
+6. It supports a **"full charge day"**: once a week the battery charges to 100% for calibration.
 
 ---
 
@@ -634,12 +642,15 @@ Mar 25 11:27:31 macbook apple-battery-guard[52127]: [INFO  abg] a iniciar daemon
 Mar 25 11:27:31 macbook apple-battery-guard[52127]: [INFO  abg::daemon] socket a escutar em /run/apple-battery-guard/daemon.sock
 Mar 25 11:27:31 macbook apple-battery-guard[52127]: [INFO  abg::daemon] threshold definido para 80%
 Mar 25 11:27:31 macbook systemd[1]: Started Apple Battery Guard.
-# Every 30s:
-Mar 25 11:28:01 macbook apple-battery-guard[52127]: [INFO  abg::daemon] threshold ok: 80%
+# Every 30s (threshold already correct — no sysfs write):
+Mar 25 11:28:01 macbook apple-battery-guard[52127]: [DEBUG abg::daemon] bateria: 75% | Discharging | threshold atual: Some(80)
+# When threshold needs reapplying:
+Mar 25 11:28:01 macbook apple-battery-guard[52127]: [INFO  abg::daemon] threshold definido para 80%
+# On resume from suspend (triggered by udev monitor, no 30s wait):
+Mar 25 14:32:10 macbook apple-battery-guard[52127]: [DEBUG abg::daemon] uevent power_supply: a aplicar threshold imediatamente
+Mar 25 14:32:10 macbook apple-battery-guard[52127]: [INFO  abg::daemon] threshold definido para 80%
 # On full charge day:
-Mar 25 11:27:31 macbook apple-battery-guard[52127]: [INFO  abg::daemon] full charge day ativo, threshold: 100%
-# On resume from suspend:
-Mar 25 14:32:10 macbook apple-battery-guard[52127]: [INFO  abg::daemon] threshold redefinido após resume: 80%
+Mar 25 11:27:31 macbook apple-battery-guard[52127]: [INFO  abg::daemon] threshold definido para 100%
 ```
 
 The daemon uses approximately **400 KB of RAM** at steady state.
@@ -834,13 +845,15 @@ apple-battery-guard/
 
 ### Design Decisions
 
-**No tokio.** The daemon uses `std::thread` + `std::sync`. The problem does not warrant an async runtime — there are two threads: the polling loop and the socket server.
+**No tokio.** The daemon uses `std::thread` + `std::sync`. The problem does not warrant an async runtime — there are three threads: the polling loop, the socket server, and the udev monitor.
 
 **sysfs as the interface.** All hardware interaction goes through `/sys/class/power_supply/`. No ioctls, no direct SMC access, no kernel-specific code. This means the daemon works with any driver that exposes the standard sysfs interface — not just `applesmc`.
 
-**Graceful fallback.** I/O errors from sysfs are logged but never crash the daemon. If `charge_control_end_threshold` does not exist, the daemon warns and continues — it does not prevent the service from starting.
+**Graceful fallback.** I/O errors from sysfs are logged but never crash the daemon. If `charge_control_end_threshold` does not exist, the daemon warns and continues. The udev monitor also fails gracefully — if `NETLINK_KOBJECT_UEVENT` is unavailable, the daemon falls back to polling-only with a log warning.
 
-**Unix socket for IPC.** The CLI (`abg status`) communicates with the daemon over a Unix socket using a simple line-based JSON protocol. No root required after initial setup. The socket lives at `/run/apple-battery-guard/daemon.sock`.
+**udev monitor via netlink.** The daemon listens for kernel uevent messages on `NETLINK_KOBJECT_UEVENT` (protocol 15). When a `SUBSYSTEM=power_supply` event is detected, an `AtomicBool` flag is set and the main loop breaks out of its sleep immediately. This ensures the threshold is reapplied within milliseconds of suspend/resume or charger events — rather than waiting up to 30 seconds for the next polling cycle.
+
+**Unix socket for IPC.** The CLI (`abg status`) first tries to read from the daemon socket, falling back to direct sysfs if the daemon is not running. The socket uses a simple line-based JSON protocol. No root required after initial setup.
 
 **No permanent root.** The udev rule grants world-write permission to the threshold file when the battery device is added by the kernel. This is the standard approach used by tools like `tlp` and `auto-cpufreq`. The daemon itself runs as a normal user.
 
@@ -850,6 +863,9 @@ apple-battery-guard/
 
 ```
 startup
+   │
+   ├── thread: socket server   ← listens on Unix socket for CLI queries
+   ├── thread: udev monitor    ← NETLINK_KOBJECT_UEVENT (sets apply_now flag)
    │
    ▼
 Battery::detect()          ← scans /sys/class/power_supply/BAT*
@@ -861,12 +877,13 @@ apply_threshold()          ← writes charge_control_end_threshold
 systemd::notify_ready()    ← READY=1
    │
    ▼
-loop (every 30s) ──────────────────────────────────┐
-   │                                                │
-   ├── battery.status()    ← reads capacity + status │
-   ├── effective_threshold() ← normal or 100% (FCD) │
-   ├── set_charge_threshold() ← only if value drifted│
-   └── systemd::notify_watchdog() ← WATCHDOG=1 ─────┘
+loop (every 30s, or immediately on udev event) ────────────┐
+   │                                                         │
+   ├── check apply_now flag (set by udev thread)             │
+   ├── battery.status()    ← reads capacity + status         │
+   ├── effective_threshold() ← normal or 100% (FCD)          │
+   ├── set_charge_threshold() ← only if value drifted        │
+   └── systemd::notify_watchdog() ← WATCHDOG=1 ──────────────┘
 ```
 
 ---

@@ -71,19 +71,26 @@ O driver `applesmc` em kernels recentes (≥ 5.4) expõe o ficheiro sysfs `charg
 ## Como funciona
 
 ```
-┌─────────────────────────────────────────────┐
-│                  abg daemon                  │
-│                                              │
-│  ┌──────────┐    ┌──────────┐  ┌─────────┐  │
-│  │ scheduler│───▶│ battery  │-▶│  sysfs  │  │
-│  │  (30s)   │    │  module  │  │ /sys/.. │  │
-│  └──────────┘    └──────────┘  └─────────┘  │
-│                                              │
-│  ┌──────────────────────────────────────┐   │
-│  │         Unix socket server            │   │
-│  │  /run/apple-battery-guard/daemon.sock │   │
-│  └──────────────────────────────────────┘   │
-└──────────────────┬──────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│                    abg daemon                     │
+│                                                   │
+│  ┌──────────┐    ┌──────────┐    ┌─────────────┐  │
+│  │ scheduler│───▶│ battery  │───▶│    sysfs    │  │
+│  │  (30s)   │    │  module  │    │ /sys/class/ │  │
+│  └────▲─────┘    └──────────┘    │ power_supply│  │
+│       │                          └─────────────┘  │
+│  ┌────┴──────────────────────────────────────┐   │
+│  │  udev monitor (NETLINK_KOBJECT_UEVENT)    │   │
+│  │  deteta eventos power_supply e aciona     │   │
+│  │  reaplicação imediata (suspend/resume,    │   │
+│  │  ligação/desligação do carregador)        │   │
+│  └────────────────────────────────────────────┘   │
+│                                                   │
+│  ┌──────────────────────────────────────────┐    │
+│  │          Unix socket server              │    │
+│  │  /run/apple-battery-guard/daemon.sock    │    │
+│  └──────────────────────────────────────────┘    │
+└──────────────────┬───────────────────────────────┘
                    │ sd_notify / watchdog
               ┌────▼─────┐
               │ systemd   │
@@ -91,10 +98,11 @@ O driver `applesmc` em kernels recentes (≥ 5.4) expõe o ficheiro sysfs `charg
 ```
 
 1. O daemon arranca e **aplica imediatamente** o threshold configurado.
-2. A cada 30 segundos (configurável) verifica se o threshold está correto e reaplica se necessário. Isto protege contra outros programas ou eventos de resume-from-suspend que possam repor o valor.
-3. Comunica com o systemd via `sd_notify` (Type=notify + watchdog).
-4. Expõe o estado atual via **Unix socket** — o CLI lê daqui sem precisar de root.
-5. Suporta **"full charge day"**: um dia por semana carrega a 100% para calibração.
+2. O **monitor udev** escuta eventos `power_supply` via netlink kernel (NETLINK_KOBJECT_UEVENT). Quando a máquina acorda do suspend, ou o carregador é ligado/desligado, o threshold é reaplicado **imediatamente** — sem esperar o próximo ciclo de polling.
+3. A cada 30 segundos (configurável) verifica e reaplica o threshold como proteção adicional.
+4. Comunica com o systemd via `sd_notify` (Type=notify + watchdog).
+5. Expõe o estado atual via **Unix socket** — o CLI (`abg status`) lê daqui sem precisar de root. Fallback para sysfs direto se o daemon não estiver ativo.
+6. Suporta **"full charge day"**: um dia por semana carrega a 100% para calibração.
 
 ---
 
@@ -555,13 +563,19 @@ abg status  # confirma que o novo threshold está ativo
 ## Utilização
 
 ```bash
-# Ver estado atual da bateria (lê do socket do daemon — sem root necessário)
+# Ver estado atual da bateria
+# Lê do socket do daemon se estiver ativo; fallback para sysfs direto
 abg status
 
-# Exemplo de output:
-# Battery:   75%
-# Status:    Discharging
+# Exemplo de output (daemon ativo):
+# Bateria:   75%
+# Estado:    Discharging
 # Threshold: 80%
+
+# Exemplo de output (daemon inativo, leitura direta do sysfs):
+# Bateria:   75%
+# Estado:    Discharging
+# Threshold: 80%  (ou "não suportado pelo kernel" se applesmc não estiver carregado)
 
 # Definir threshold manualmente (ignora o daemon, escreve diretamente no sysfs)
 abg set 80
@@ -634,12 +648,15 @@ Mar 25 11:27:31 macbook apple-battery-guard[52127]: [INFO  abg] a iniciar daemon
 Mar 25 11:27:31 macbook apple-battery-guard[52127]: [INFO  abg::daemon] socket a escutar em /run/apple-battery-guard/daemon.sock
 Mar 25 11:27:31 macbook apple-battery-guard[52127]: [INFO  abg::daemon] threshold definido para 80%
 Mar 25 11:27:31 macbook systemd[1]: Started Apple Battery Guard.
-# A cada 30s:
-Mar 25 11:28:01 macbook apple-battery-guard[52127]: [INFO  abg::daemon] threshold ok: 80%
+# A cada 30s (threshold já correto — sem escrita no sysfs):
+Mar 25 11:28:01 macbook apple-battery-guard[52127]: [DEBUG abg::daemon] bateria: 75% | Discharging | threshold atual: Some(80)
+# Quando o threshold precisa de ser reaplicado:
+Mar 25 11:28:01 macbook apple-battery-guard[52127]: [INFO  abg::daemon] threshold definido para 80%
+# Após resume de suspend (acionado pelo monitor udev, sem esperar 30s):
+Mar 25 14:32:10 macbook apple-battery-guard[52127]: [DEBUG abg::daemon] uevent power_supply: a aplicar threshold imediatamente
+Mar 25 14:32:10 macbook apple-battery-guard[52127]: [INFO  abg::daemon] threshold definido para 80%
 # No full charge day:
-Mar 25 11:27:31 macbook apple-battery-guard[52127]: [INFO  abg::daemon] full charge day ativo, threshold: 100%
-# Após resume de suspend:
-Mar 25 14:32:10 macbook apple-battery-guard[52127]: [INFO  abg::daemon] threshold redefinido após resume: 80%
+Mar 25 11:27:31 macbook apple-battery-guard[52127]: [INFO  abg::daemon] threshold definido para 100%
 ```
 
 O daemon usa aproximadamente **400 KB de RAM** em estado estável.
