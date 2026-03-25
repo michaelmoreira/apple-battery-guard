@@ -30,6 +30,8 @@ impl fmt::Display for BatteryError {
     }
 }
 
+impl std::error::Error for BatteryError {}
+
 impl From<std::io::Error> for BatteryError {
     fn from(e: std::io::Error) -> Self {
         BatteryError::Io(e)
@@ -72,11 +74,15 @@ impl Battery {
             }
         })?;
 
-        for entry in entries.flatten() {
+        // Ordenar entradas BAT* por nome para deteção determinística (BAT0 antes de BAT1)
+        let mut bat_entries: Vec<_> = entries
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("BAT"))
+            .collect();
+        bat_entries.sort_by_key(|e| e.file_name());
+
+        for entry in bat_entries {
             let name = entry.file_name().to_string_lossy().to_string();
-            if !name.starts_with("BAT") {
-                continue;
-            }
             let path = entry.path();
             // Verifica que tem o atributo `type = Battery`
             let type_path = path.join("type");
@@ -115,11 +121,12 @@ impl Battery {
             return Err(BatteryError::ThresholdOutOfRange(pct));
         }
         let path = self.base_path.join("charge_control_end_threshold");
+        // Verificação explícita: o ficheiro não existir significa kernel sem suporte,
+        // não um erro de I/O transitório. Em sysfs a existência é controlada pelo kernel.
         if !path.exists() {
             return Err(BatteryError::NotFound(path.display().to_string()));
         }
-        fs::write(&path, format!("{pct}\n"))?;
-        Ok(())
+        fs::write(&path, format!("{pct}\n")).map_err(BatteryError::Io)
     }
 
     /// Verifica se o kernel suporta `charge_control_end_threshold`.
@@ -133,11 +140,15 @@ impl Battery {
 
     fn read_string(&self, attr: &str) -> Result<String, BatteryError> {
         let path = self.base_path.join(attr);
-        if !path.exists() {
-            return Err(BatteryError::NotFound(path.display().to_string()));
-        }
-        let raw = fs::read_to_string(&path)?;
-        Ok(raw.trim().to_string())
+        fs::read_to_string(&path)
+            .map(|s| s.trim().to_string())
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    BatteryError::NotFound(path.display().to_string())
+                } else {
+                    BatteryError::Io(e)
+                }
+            })
     }
 
     fn read_u8(&self, attr: &str) -> Result<u8, BatteryError> {
@@ -155,8 +166,8 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    fn fake_battery(dir: &TempDir, capacity: u8, status: &str, threshold: Option<u8>) -> PathBuf {
-        let bat = dir.path().join("BAT0");
+    fn fake_battery(dir: &TempDir, name: &str, capacity: u8, status: &str, threshold: Option<u8>) -> PathBuf {
+        let bat = dir.path().join(name);
         fs::create_dir_all(&bat).unwrap();
         fs::write(bat.join("type"), "Battery\n").unwrap();
         fs::write(bat.join("capacity"), format!("{capacity}\n")).unwrap();
@@ -170,7 +181,7 @@ mod tests {
     #[test]
     fn detect_finds_battery() {
         let dir = TempDir::new().unwrap();
-        fake_battery(&dir, 75, "Discharging", Some(80));
+        fake_battery(&dir, "BAT0", 75, "Discharging", Some(80));
         let bat = Battery::detect_in(dir.path()).unwrap();
         assert_eq!(bat.name, "BAT0");
     }
@@ -188,9 +199,18 @@ mod tests {
     }
 
     #[test]
+    fn detect_prefers_bat0_over_bat1() {
+        let dir = TempDir::new().unwrap();
+        fake_battery(&dir, "BAT1", 60, "Discharging", None);
+        fake_battery(&dir, "BAT0", 75, "Charging", Some(80));
+        let bat = Battery::detect_in(dir.path()).unwrap();
+        assert_eq!(bat.name, "BAT0");
+    }
+
+    #[test]
     fn status_reads_all_fields() {
         let dir = TempDir::new().unwrap();
-        fake_battery(&dir, 82, "Charging", Some(80));
+        fake_battery(&dir, "BAT0", 82, "Charging", Some(80));
         let bat = Battery::detect_in(dir.path()).unwrap();
         let s = bat.status().unwrap();
         assert_eq!(s.capacity, 82);
@@ -201,7 +221,7 @@ mod tests {
     #[test]
     fn status_without_threshold_support() {
         let dir = TempDir::new().unwrap();
-        fake_battery(&dir, 55, "Discharging", None);
+        fake_battery(&dir, "BAT0", 55, "Discharging", None);
         let bat = Battery::detect_in(dir.path()).unwrap();
         let s = bat.status().unwrap();
         assert_eq!(s.charge_control_end_threshold, None);
@@ -210,7 +230,7 @@ mod tests {
     #[test]
     fn set_threshold_writes_value() {
         let dir = TempDir::new().unwrap();
-        fake_battery(&dir, 60, "Charging", Some(100));
+        fake_battery(&dir, "BAT0", 60, "Charging", Some(100));
         let bat = Battery::detect_in(dir.path()).unwrap();
         bat.set_charge_threshold(80).unwrap();
         let written = fs::read_to_string(bat.base_path.join("charge_control_end_threshold")).unwrap();
@@ -220,7 +240,7 @@ mod tests {
     #[test]
     fn set_threshold_rejects_zero() {
         let dir = TempDir::new().unwrap();
-        fake_battery(&dir, 60, "Charging", Some(100));
+        fake_battery(&dir, "BAT0", 60, "Charging", Some(100));
         let bat = Battery::detect_in(dir.path()).unwrap();
         let err = bat.set_charge_threshold(0).unwrap_err();
         assert!(matches!(err, BatteryError::ThresholdOutOfRange(0)));
@@ -229,7 +249,7 @@ mod tests {
     #[test]
     fn set_threshold_rejects_above_100() {
         let dir = TempDir::new().unwrap();
-        fake_battery(&dir, 60, "Charging", Some(100));
+        fake_battery(&dir, "BAT0", 60, "Charging", Some(100));
         let bat = Battery::detect_in(dir.path()).unwrap();
         let err = bat.set_charge_threshold(101).unwrap_err();
         assert!(matches!(err, BatteryError::ThresholdOutOfRange(101)));
@@ -239,7 +259,7 @@ mod tests {
     fn set_threshold_fails_without_sysfs_file() {
         let dir = TempDir::new().unwrap();
         // sem o ficheiro charge_control_end_threshold
-        fake_battery(&dir, 60, "Charging", None);
+        fake_battery(&dir, "BAT0", 60, "Charging", None);
         let bat = Battery::detect_in(dir.path()).unwrap();
         let err = bat.set_charge_threshold(80).unwrap_err();
         assert!(matches!(err, BatteryError::NotFound(_)));
@@ -248,7 +268,7 @@ mod tests {
     #[test]
     fn supports_threshold_true_when_file_exists() {
         let dir = TempDir::new().unwrap();
-        fake_battery(&dir, 60, "Charging", Some(80));
+        fake_battery(&dir, "BAT0", 60, "Charging", Some(80));
         let bat = Battery::detect_in(dir.path()).unwrap();
         assert!(bat.supports_threshold());
     }
@@ -256,7 +276,7 @@ mod tests {
     #[test]
     fn supports_threshold_false_when_file_missing() {
         let dir = TempDir::new().unwrap();
-        fake_battery(&dir, 60, "Charging", None);
+        fake_battery(&dir, "BAT0", 60, "Charging", None);
         let bat = Battery::detect_in(dir.path()).unwrap();
         assert!(!bat.supports_threshold());
     }

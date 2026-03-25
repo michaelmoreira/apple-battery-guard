@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/apple-battery-guard/apple-battery-guard.toml";
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 pub struct Config {
     #[serde(default)]
     pub battery: BatteryConfig,
@@ -95,13 +95,22 @@ impl Config {
         toml::from_str(s).map_err(|e| ConfigError::Parse(e.to_string()))
     }
 
-    /// Tenta carregar do caminho default; se não existir, devolve Config::default().
+    /// Tenta carregar do caminho default; se não existir ou falhar, devolve Config::default().
+    /// Em caso de erro de parse (ficheiro existe mas TOML inválido), emite um aviso no log.
     pub fn load_or_default(path: impl AsRef<Path>) -> Self {
         let path = path.as_ref();
-        if path.exists() {
-            Self::load(path).unwrap_or_default()
-        } else {
-            Self::default()
+        if !path.exists() {
+            return Self::default();
+        }
+        match Self::load(path) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                log::warn!(
+                    "falha ao carregar configuração de '{}': {e} — a usar valores predefinidos",
+                    path.display()
+                );
+                Self::default()
+            }
         }
     }
 
@@ -136,27 +145,28 @@ impl Config {
                 "interval_secs deve ser > 0".to_string(),
             ));
         }
+        if self.daemon.socket_path.is_empty() {
+            return Err(ConfigError::Validation(
+                "socket_path não pode ser vazio".to_string(),
+            ));
+        }
         Ok(())
     }
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            battery: BatteryConfig::default(),
-            daemon: DaemonConfig::default(),
-            full_charge: FullChargeConfig::default(),
-        }
-    }
-}
 
-#[derive(Debug)]
 #[allow(dead_code)] // Serialize só é construído por Config::save
 pub enum ConfigError {
     Io { path: PathBuf, source: std::io::Error },
     Parse(String),
     Serialize(String),
     Validation(String),
+}
+
+impl std::fmt::Debug for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self}")
+    }
 }
 
 impl std::fmt::Display for ConfigError {
@@ -171,6 +181,8 @@ impl std::fmt::Display for ConfigError {
         }
     }
 }
+
+impl std::error::Error for ConfigError {}
 
 // ── Testes ────────────────────────────────────────────────────────────────────
 
@@ -258,6 +270,13 @@ mod tests {
     }
 
     #[test]
+    fn validation_rejects_empty_socket_path() {
+        let mut cfg = Config::default();
+        cfg.daemon.socket_path = String::new();
+        assert!(matches!(cfg.validate(), Err(ConfigError::Validation(_))));
+    }
+
+    #[test]
     fn save_and_reload_roundtrip() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("config.toml");
@@ -275,6 +294,16 @@ mod tests {
     #[test]
     fn load_or_default_returns_default_when_missing() {
         let cfg = Config::load_or_default("/tmp/this_file_does_not_exist_abg.toml");
+        assert_eq!(cfg, Config::default());
+    }
+
+    #[test]
+    fn load_or_default_returns_default_on_invalid_toml() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("bad.toml");
+        std::fs::write(&path, "[[[[not valid toml").unwrap();
+        // Deve retornar defaults sem panic (emite log::warn internamente)
+        let cfg = Config::load_or_default(&path);
         assert_eq!(cfg, Config::default());
     }
 

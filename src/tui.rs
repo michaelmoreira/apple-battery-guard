@@ -19,8 +19,31 @@ use ratatui::{
 
 use crate::battery::{Battery, BatteryStatus};
 
+/// Guard que restaura o terminal mesmo em caso de panic.
+struct TerminalGuard;
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+    }
+}
+
 pub fn run_tui() -> Result<(), io::Error> {
+    // Instalar panic hook antes de alterar o terminal.
+    // Garante restauração mesmo com panic = "abort" no Cargo.toml.
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        original_hook(info);
+    }));
+
     enable_raw_mode()?;
+
+    // TerminalGuard garante cleanup via Drop em qualquer caminho de saída
+    let _guard = TerminalGuard;
+
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
 
@@ -29,21 +52,23 @@ pub fn run_tui() -> Result<(), io::Error> {
 
     let result = event_loop(&mut terminal);
 
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
+    // Restaurar o panic hook original
+    let _ = std::panic::take_hook();
 
     result
+    // _guard é dropped aqui: disable_raw_mode + LeaveAlternateScreen
 }
 
 fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<(), io::Error> {
     let battery = Battery::detect().ok();
-    let mut last_refresh = Instant::now();
-    let mut status: Option<BatteryStatus> = None;
     let refresh_interval = Duration::from_secs(5);
 
+    // Inicializar no passado para que o primeiro fetch seja imediato
+    let mut last_refresh = Instant::now() - refresh_interval;
+    let mut status: Option<BatteryStatus> = None;
+
     loop {
-        // Atualiza estado a cada 5s
+        // Atualiza estado a cada 5s (e imediatamente na primeira iteração)
         if last_refresh.elapsed() >= refresh_interval {
             status = battery.as_ref().and_then(|b| b.status().ok());
             last_refresh = Instant::now();
