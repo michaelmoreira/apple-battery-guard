@@ -2,11 +2,28 @@
 
 [🇵🇹 Português](README.pt.md) | 🇬🇧 English
 
+[![AUR version](https://img.shields.io/aur/version/apple-battery-guard)](https://aur.archlinux.org/packages/apple-battery-guard)
+[![AUR votes](https://img.shields.io/aur/votes/apple-battery-guard)](https://aur.archlinux.org/packages/apple-battery-guard)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Intelligent battery charge threshold manager for **Intel MacBooks running Linux**.
 
 MacBooks on Linux charge the battery to 100% every time, prematurely degrading it. macOS automatically limits charging to 80% via the Apple SMC. This project replicates that behavior on Linux through sysfs — no kernel patches, no heavy dependencies.
 
 Tested on a **2017 MacBook Air (Intel) running Manjaro**. Works on any systemd-based distribution.
+
+---
+
+## Quick Start
+
+```bash
+# Arch / Manjaro
+yay -S apple-battery-guard
+sudo systemctl enable --now apple-battery-guard
+abg status
+```
+
+If `abg status` shows `Threshold: 80%` — you're done. If it shows `Threshold: unsupported`, see [Kernel Module (applesmc-next)](#kernel-module-applesmc-next).
 
 ---
 
@@ -24,9 +41,12 @@ Tested on a **2017 MacBook Air (Intel) running Manjaro**. Works on any systemd-b
 - [Installation](#installation)
   - [Arch Linux / Manjaro (AUR)](#arch-linux--manjaro-aur)
   - [Other Distributions (Build from Source)](#other-distributions-build-from-source)
+- [Verify the Installation](#verify-the-installation)
 - [Configuration](#configuration)
 - [Usage](#usage)
 - [systemd Service](#systemd-service)
+- [Troubleshooting](#troubleshooting)
+- [Uninstall](#uninstall)
 - [Architecture](#architecture)
 - [Development](#development)
 - [FAQ](#faq)
@@ -54,7 +74,7 @@ The `applesmc` driver on recent kernels (≥ 5.4) exposes the `charge_control_en
 │                  abg daemon                  │
 │                                              │
 │  ┌──────────┐    ┌──────────┐  ┌─────────┐  │
-│  │ scheduler│───▶│ battery  │─▶│  sysfs  │  │
+│  │ scheduler│───▶│ battery  │-▶│  sysfs  │  │
 │  │  (30s)   │    │  module  │  │ /sys/.. │  │
 │  └──────────┘    └──────────┘  └─────────┘  │
 │                                              │
@@ -70,7 +90,7 @@ The `applesmc` driver on recent kernels (≥ 5.4) exposes the `charge_control_en
 ```
 
 1. The daemon starts and **immediately applies** the configured threshold.
-2. Every 30 seconds (configurable) it checks whether the threshold is correct and reapplies if needed.
+2. Every 30 seconds (configurable) it checks whether the threshold is correct and reapplies if needed. This guards against other tools or resume-from-suspend events resetting the value.
 3. It communicates with systemd via `sd_notify` (Type=notify + watchdog).
 4. It exposes current state via a **Unix socket** — the CLI reads from it without requiring root.
 5. It supports a **"full charge day"**: once a week the battery charges to 100% for calibration.
@@ -82,6 +102,8 @@ The `applesmc` driver on recent kernels (≥ 5.4) exposes the `charge_control_en
 ### Hardware
 - Intel MacBook (Air, Pro, Mini — any Intel model)
 - Tested on MacBook Air 2017
+
+> **Apple Silicon (M1/M2/M3) is not supported.** These chips have a completely different power management architecture that does not use the `applesmc` driver.
 
 ### Software
 - Linux with systemd
@@ -97,10 +119,11 @@ Before installing, check whether your kernel already exposes the required sysfs 
 cat /sys/class/power_supply/BAT0/charge_control_end_threshold
 ```
 
-| Output | Meaning |
-|---|---|
-| A number (e.g. `80`) | Kernel already supports it. Proceed directly to [Installation](#installation). |
-| `No such file or directory` | Kernel does not support it. Install `applesmc-next` first — see below. |
+| Output | Meaning | Action |
+|---|---|---|
+| A number (e.g. `80`) | Native support present | Proceed to [Installation](#installation) |
+| `No such file or directory` | No native support | Install `applesmc-next` first — see below |
+| `Permission denied` | File exists but not writable | Set up the udev rule — see [Installation](#installation) step 6 |
 
 ---
 
@@ -137,7 +160,7 @@ The script will:
    - Load the module with `modprobe applesmc`
    - Confirm that the threshold file is now available
 
-**Dependencies required by the script:**
+**Install dkms and kernel headers first:**
 
 | Distribution | Command |
 |---|---|
@@ -145,7 +168,7 @@ The script will:
 | Debian / Ubuntu | `sudo apt install dkms linux-headers-$(uname -r)` |
 | Fedora | `sudo dnf install dkms kernel-devel` |
 
-After installation, the module is managed by DKMS and will be **automatically recompiled on every kernel update**.
+After installation, the module is managed by DKMS and will be **automatically recompiled on every kernel update** — no manual intervention needed.
 
 ### Manual Installation
 
@@ -155,6 +178,9 @@ If you prefer to install `applesmc-next` without the script:
 ```bash
 yay -S applesmc-next-dkms
 sudo modprobe applesmc
+
+# Verify
+cat /sys/class/power_supply/BAT0/charge_control_end_threshold
 ```
 
 **Option B — From the bundled submodule:**
@@ -244,14 +270,17 @@ bash scripts/setup-kernel-module.sh
 # 4. Build
 cargo build --release
 
-# 5. Install
+# 5. Install binary, config and systemd service
 sudo install -Dm755 target/release/abg /usr/local/bin/abg
 sudo install -Dm644 config/apple-battery-guard.toml \
     /etc/apple-battery-guard/apple-battery-guard.toml
 sudo install -Dm644 systemd/apple-battery-guard.service \
     /etc/systemd/system/apple-battery-guard.service
 
-# 6. Grant write access to sysfs (no permanent root required)
+# 6. Grant write access to sysfs (eliminates the need for permanent root)
+#    This udev rule runs chmod on the threshold file every time the battery
+#    device is added (boot, resume from suspend), making it writable by
+#    any user — so the daemon never needs to run as root.
 echo 'ACTION=="add", SUBSYSTEM=="power_supply", KERNEL=="BAT[0-9]", \
   RUN+="/bin/chmod 666 /sys%p/charge_control_end_threshold"' \
   | sudo tee /etc/udev/rules.d/99-battery-threshold.rules
@@ -260,6 +289,38 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 # 7. Enable and start the service
 sudo systemctl enable --now apple-battery-guard
 ```
+
+---
+
+## Verify the Installation
+
+After installing, confirm everything is working:
+
+```bash
+# 1. Check the service is running
+systemctl status apple-battery-guard
+# Expected: Active: active (running)
+
+# 2. Check the threshold was applied
+cat /sys/class/power_supply/BAT0/charge_control_end_threshold
+# Expected: 80
+
+# 3. Check the daemon status via CLI
+abg status
+# Expected output:
+# Battery:   75%
+# Status:    Discharging
+# Threshold: 80%
+
+# 4. Check the logs for the startup sequence
+journalctl -u apple-battery-guard -n 20
+# Expected lines:
+# apple-battery-guard[...]: battery detected: BAT0
+# apple-battery-guard[...]: threshold applied: 80%
+# apple-battery-guard[...]: ready
+```
+
+If `Threshold` shows as `unsupported` in `abg status`, the `charge_control_end_threshold` sysfs file is not available. See [Kernel Module (applesmc-next)](#kernel-module-applesmc-next).
 
 ---
 
@@ -274,15 +335,22 @@ File: `/etc/apple-battery-guard/apple-battery-guard.toml`
 charge_end_threshold = 80
 
 [daemon]
-# Polling interval in seconds.
+# How often the daemon checks and reapplies the threshold, in seconds.
+# Lower values react faster to resume-from-suspend events.
+# Default: 30
 interval_secs = 30
 
-# Unix socket path for CLI communication.
+# Path to the Unix socket used for CLI communication.
+# The CLI (abg status, abg config) reads from this socket without root.
 socket_path = "/run/apple-battery-guard/daemon.sock"
 
 [full_charge]
-# "Full charge day": charge to 100% once a week.
-# Useful for calibration and days with heavy use away from a power source.
+# "Full charge day": on the configured weekday, the threshold is raised to
+# 100% so the battery charges fully. Useful for calibration (helps the
+# battery gauge stay accurate) and for days you know you'll need maximum
+# range away from a power source.
+#
+# The threshold returns to charge_end_threshold automatically the next day.
 enabled = false
 
 # Day of the week: sunday, monday, tuesday, wednesday, thursday, friday, saturday
@@ -298,12 +366,21 @@ weekday = "sunday"
 | Frequent mobile use | 90% | More runtime, less durability |
 | Calibration / travel | 100% | Temporary via full_charge_day |
 
+### Applying Configuration Changes
+
+The daemon reads the config file on startup. After editing it, restart the service:
+
+```bash
+sudo systemctl restart apple-battery-guard
+abg status  # confirm the new threshold is active
+```
+
 ---
 
 ## Usage
 
 ```bash
-# Show current battery status
+# Show current battery status (reads from the daemon socket — no root needed)
 abg status
 
 # Example output:
@@ -311,10 +388,10 @@ abg status
 # Status:    Discharging
 # Threshold: 80%
 
-# Set threshold manually (requires sysfs write permission)
+# Set threshold manually (bypasses the daemon, writes directly to sysfs)
 abg set 80
 
-# Show effective configuration
+# Show the effective configuration loaded by the daemon
 abg config
 
 # Open the interactive TUI dashboard
@@ -350,20 +427,179 @@ Refreshes every 5 seconds. Press `q` or `Esc` to quit.
 ## systemd Service
 
 ```bash
-# Enable and start
+# Enable at boot and start immediately
 sudo systemctl enable --now apple-battery-guard
 
 # Check status
 systemctl status apple-battery-guard
 
-# Follow logs
+# Follow logs in real time
 journalctl -u apple-battery-guard -f
+
+# Show logs since last boot
+journalctl -u apple-battery-guard -b
 
 # Restart after changing configuration
 sudo systemctl restart apple-battery-guard
+
+# Stop the daemon (threshold remains at last set value)
+sudo systemctl stop apple-battery-guard
+
+# Disable at boot
+sudo systemctl disable apple-battery-guard
 ```
 
 The service uses `Type=notify` with a watchdog — if the daemon hangs, systemd will automatically restart it after 90 seconds.
+
+### What the Logs Look Like
+
+```
+Mar 25 10:00:01 host apple-battery-guard[1234]: battery detected: BAT0
+Mar 25 10:00:01 host apple-battery-guard[1234]: threshold applied: 80%
+Mar 25 10:00:01 host apple-battery-guard[1234]: ready
+Mar 25 10:00:31 host apple-battery-guard[1234]: threshold ok: 80%
+Mar 25 10:01:01 host apple-battery-guard[1234]: threshold ok: 80%
+# On full charge day:
+Mar 25 10:00:01 host apple-battery-guard[1234]: full charge day active, threshold: 100%
+# On resume from suspend:
+Mar 25 14:32:10 host apple-battery-guard[1234]: threshold reapplied after resume: 80%
+```
+
+---
+
+## Troubleshooting
+
+### `charge_control_end_threshold` not found
+
+```
+abg status → Threshold: unsupported
+```
+
+Your kernel does not expose the threshold file. Install `applesmc-next`:
+```bash
+bash scripts/setup-kernel-module.sh
+```
+See [Kernel Module (applesmc-next)](#kernel-module-applesmc-next) for details.
+
+---
+
+### Permission denied when writing threshold
+
+```
+journalctl -u apple-battery-guard → I/O error: Permission denied
+```
+
+The udev rule is not active. Verify it exists and reload:
+```bash
+cat /etc/udev/rules.d/99-battery-threshold.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger
+# If the file does not exist, create it as shown in Installation step 6
+```
+
+After reloading, restart the service:
+```bash
+sudo systemctl restart apple-battery-guard
+```
+
+---
+
+### Daemon fails to start
+
+```
+systemctl status apple-battery-guard → Failed
+```
+
+Check the full logs:
+```bash
+journalctl -u apple-battery-guard -n 50 --no-pager
+```
+
+Common causes:
+- Config file syntax error — validate with: `abg --config /etc/apple-battery-guard/apple-battery-guard.toml config`
+- Battery not found — check `ls /sys/class/power_supply/`
+- Socket directory does not exist — create it: `sudo mkdir -p /run/apple-battery-guard`
+
+---
+
+### Threshold resets to 100% after suspend/resume
+
+This can happen if another tool (e.g. `tlp`, `auto-cpufreq`) overwrites the threshold on resume. Check for conflicts:
+```bash
+systemctl list-units | grep -E "tlp|cpufreq|battery"
+```
+
+If `tlp` is installed, add to `/etc/tlp.conf`:
+```
+START_CHARGE_THRESH_BAT0=0
+STOP_CHARGE_THRESH_BAT0=80
+```
+Or disable tlp's battery management and let `apple-battery-guard` handle it exclusively.
+
+---
+
+### `modules/applesmc-next` is empty after cloning
+
+You cloned without initializing submodules:
+```bash
+git submodule update --init
+```
+
+---
+
+### applesmc-next fails to compile after a kernel update
+
+The upstream module may not yet support the new kernel. Check:
+```bash
+# See if a fix was released
+git submodule update --remote modules/applesmc-next
+git diff modules/applesmc-next
+```
+
+If no fix exists yet, you can temporarily charge to 100% by disabling the daemon:
+```bash
+sudo systemctl stop apple-battery-guard
+```
+
+---
+
+## Uninstall
+
+### AUR (Arch / Manjaro)
+
+```bash
+# Remove the package (binary, config, systemd service)
+sudo pacman -R apple-battery-guard
+
+# Optionally remove the config file (pacman keeps it by default)
+sudo rm -rf /etc/apple-battery-guard
+
+# Optionally remove applesmc-next if you installed it
+sudo pacman -R applesmc-next-dkms
+```
+
+### Build from Source
+
+```bash
+# Stop and disable the service
+sudo systemctl disable --now apple-battery-guard
+
+# Remove installed files
+sudo rm /usr/local/bin/abg
+sudo rm /etc/systemd/system/apple-battery-guard.service
+sudo rm -rf /etc/apple-battery-guard
+sudo rm -f /etc/udev/rules.d/99-battery-threshold.rules
+
+# Reload udev and systemd
+sudo udevadm control --reload-rules
+sudo systemctl daemon-reload
+
+# Optionally remove applesmc-next DKMS module
+VERSION=$(grep "^PACKAGE_VERSION=" modules/applesmc-next/dkms.conf | cut -d= -f2 | tr -d '"')
+sudo dkms remove applesmc-next/${VERSION} --all
+sudo rm -rf /usr/src/applesmc-next-${VERSION}
+```
+
+After uninstalling, the battery will charge to 100% again on the next full charge cycle.
 
 ---
 
@@ -397,11 +633,13 @@ apple-battery-guard/
 
 **No tokio.** The daemon uses `std::thread` + `std::sync`. The problem does not warrant an async runtime — there are two threads: the polling loop and the socket server.
 
-**sysfs as the interface.** All hardware interaction goes through `/sys/class/power_supply/`. No ioctls, no direct SMC access, no kernel-specific code.
+**sysfs as the interface.** All hardware interaction goes through `/sys/class/power_supply/`. No ioctls, no direct SMC access, no kernel-specific code. This means the daemon works with any driver that exposes the standard sysfs interface — not just `applesmc`.
 
 **Graceful fallback.** I/O errors from sysfs are logged but never crash the daemon. If `charge_control_end_threshold` does not exist, the daemon warns and continues — it does not prevent the service from starting.
 
-**Unix socket for IPC.** The CLI (`abg status`) communicates with the daemon over a Unix socket using a simple line-based JSON protocol. No root required after initial setup.
+**Unix socket for IPC.** The CLI (`abg status`) communicates with the daemon over a Unix socket using a simple line-based JSON protocol. No root required after initial setup. The socket lives at `/run/apple-battery-guard/daemon.sock`.
+
+**No permanent root.** The udev rule grants world-write permission to the threshold file when the battery device is added by the kernel. This is the standard approach used by tools like `tlp` and `auto-cpufreq`. The daemon itself runs as a normal user.
 
 **Bundled kernel module.** `applesmc-next` is included as a git submodule rather than an external dependency. This guarantees reproducibility and allows the setup script to install the exact tested version without requiring network access beyond the initial clone.
 
@@ -424,7 +662,7 @@ loop (every 30s) ─────────────────────
    │                                                │
    ├── battery.status()    ← reads capacity + status │
    ├── effective_threshold() ← normal or 100% (FCD) │
-   ├── set_charge_threshold() ← only if needed       │
+   ├── set_charge_threshold() ← only if value drifted│
    └── systemd::notify_watchdog() ← WATCHDOG=1 ─────┘
 ```
 
@@ -501,25 +739,25 @@ test result: ok. 30 passed; 0 failed; 0 ignored
 ## FAQ
 
 **Does the daemon require permanent root?**
-No. Only the initial udev rule setup requires root. After that, the daemon runs as a normal user with sysfs write access granted by the udev rule.
+No. Only the initial udev rule setup requires root. The udev rule runs `chmod 666` on the threshold file whenever the battery device is registered by the kernel (on boot and resume). After that, the daemon runs as a normal user.
 
 **Does it work on Apple Silicon MacBooks (M1/M2/M3)?**
-No. This project is specific to Intel MacBooks. Apple Silicon chips have a completely different power management architecture.
+No. This project is specific to Intel MacBooks. Apple Silicon chips have a completely different power management architecture that does not use the `applesmc` driver.
 
 **Is the threshold persisted across reboots?**
 Yes — the daemon applies the threshold on startup. With the systemd service enabled, it is guaranteed after every boot.
 
 **Can I use it on non-Apple Linux laptops?**
-Possibly, if your kernel exposes `charge_control_end_threshold` for your battery. `abg status` will tell you whether it is supported.
+Possibly. If your kernel exposes `charge_control_end_threshold` for your battery, the daemon will use it. `abg status` will tell you whether it is supported.
 
 **What happens if the daemon crashes?**
-systemd restarts it automatically (`Restart=on-failure`). The watchdog restarts it if it hangs for more than 90 seconds.
+systemd restarts it automatically (`Restart=on-failure`). The watchdog also restarts it if it hangs for more than 90 seconds without sending a keepalive.
 
 **Do I need to install applesmc-next?**
 Only if your kernel does not expose `charge_control_end_threshold` natively. Run `cat /sys/class/power_supply/BAT0/charge_control_end_threshold` — if it returns a number, you do not need it.
 
 **Will applesmc-next break after a kernel update?**
-No. Because it is installed via DKMS, it is automatically recompiled for each new kernel version. If a new kernel changes an internal API that breaks compilation, update the submodule (`git submodule update --remote modules/applesmc-next`) to get the latest upstream fix.
+No. Because it is installed via DKMS, it is automatically recompiled for each new kernel version. If a new kernel changes an internal API that breaks compilation, update the submodule (`git submodule update --remote modules/applesmc-next`) to pick up the latest upstream fix.
 
 **I cloned the repo but `modules/applesmc-next` is empty. Why?**
 You cloned without initializing submodules. Run:
@@ -527,8 +765,14 @@ You cloned without initializing submodules. Run:
 git submodule update --init
 ```
 
+**Does it conflict with tlp or auto-cpufreq?**
+It can, if those tools also manage battery thresholds. See [Threshold resets to 100% after suspend/resume](#threshold-resets-to-100-after-suspendresume) in the Troubleshooting section.
+
 **Can I have two thresholds — one for home and one for travel?**
 Not yet, but it is on the roadmap. Current workaround: `abg set 90` before traveling and `abg set 80` when you return.
+
+**What is the full charge day exactly?**
+When `full_charge.enabled = true`, on the configured weekday the daemon raises the threshold to 100% instead of the normal value. This allows the battery to charge completely — useful for calibrating the charge gauge and for travel days when you need maximum range. The next day, it automatically returns to the normal threshold.
 
 ---
 
