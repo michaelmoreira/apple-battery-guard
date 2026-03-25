@@ -6,8 +6,12 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CONFIG_DIR="${SCRIPT_DIR}/config"
+# Suporta execução tanto do repo como do pacote instalado
+if [[ -d "/usr/share/apple-battery-guard" ]]; then
+    CONFIG_DIR="/usr/share/apple-battery-guard"
+else
+    CONFIG_DIR="$(cd "$(dirname "$0")/.." && pwd)/config"
+fi
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
