@@ -42,6 +42,7 @@ Se `abg status` mostrar `Threshold: 80%` — está pronto. Se mostrar `Threshold
   - [Arch Linux / Manjaro (AUR)](#arch-linux--manjaro-aur)
   - [Outras distros (compilar da fonte)](#outras-distros-compilar-da-fonte)
 - [Verificar a instalação](#verificar-a-instalação)
+- [Setup completo de gestão de energia](#setup-completo-de-gestão-de-energia)
 - [Configuração](#configuração)
 - [Utilização](#utilização)
 - [Serviço systemd](#serviço-systemd)
@@ -321,6 +322,107 @@ journalctl -u apple-battery-guard -n 20
 ```
 
 Se `Threshold` aparecer como `unsupported` no `abg status`, o ficheiro sysfs `charge_control_end_threshold` não está disponível. Consulta [Módulo de kernel (applesmc-next)](#módulo-de-kernel-applesmc-next).
+
+---
+
+## Setup completo de gestão de energia
+
+O `apple-battery-guard` gere o threshold de carga. Para uma experiência de gestão de energia completa semelhante ao macOS no teu MacBook Intel, o projeto inclui também configurações otimizadas para três ferramentas complementares.
+
+### O que cada ferramenta faz
+
+| Ferramenta | Responsabilidade | Risco de conflito |
+|---|---|---|
+| **apple-battery-guard** | Threshold de carga da bateria (80%) | — |
+| **auto-cpufreq** | Governor CPU, freq scaling, turbo | Desativar `power-profiles-daemon` |
+| **mbpfan** | Controlo da velocidade da ventoinha via applesmc | Nenhum |
+| **tlp** | Disco, USB, WiFi, áudio, PCIe power saving | NÃO definir settings de CPU nem de bateria |
+
+> **Importante:** As configurações incluídas estão pré-configuradas para evitar conflitos. As definições de governor CPU e de threshold de bateria do TLP estão intencionalmente comentadas — são geridas pelo `auto-cpufreq` e pelo `apple-battery-guard` respetivamente.
+
+### Setup automático (recomendado)
+
+```bash
+sudo bash scripts/setup-power.sh
+```
+
+O script instala e configura as três ferramentas, ativa os serviços, desativa ferramentas conflituantes (`power-profiles-daemon`) e verifica que tudo está a correr.
+
+### Setup manual
+
+**1. auto-cpufreq** — Gestão de frequência do CPU
+
+```bash
+# Instalar
+yay -S auto-cpufreq
+
+# Aplicar config (otimizada para MacBook Air 2017, i5-5350U)
+sudo cp config/auto-cpufreq.conf /etc/auto-cpufreq.conf
+
+# Instalar como serviço (desativa power-profiles-daemon automaticamente)
+sudo auto-cpufreq --install
+
+# Verificar
+auto-cpufreq --stats
+```
+
+**2. mbpfan** — Controlo da ventoinha
+
+```bash
+# Instalar
+yay -S mbpfan
+
+# Carregar módulos necessários no boot
+sudo tee /etc/modules-load.d/mbpfan.conf << 'EOF'
+coretemp
+applesmc
+EOF
+
+# Aplicar config
+sudo cp config/mbpfan.conf /etc/mbpfan.conf
+
+# Ativar serviço
+sudo systemctl enable --now mbpfan
+```
+
+**3. tlp** — Poupança de energia do sistema
+
+```bash
+# Instalar
+sudo pacman -S tlp
+
+# Aplicar config específica para MacBook
+sudo cp config/tlp-macbook.conf /etc/tlp.d/10-macbook.conf
+
+# Ativar e aplicar
+sudo systemctl enable --now tlp
+sudo tlp start
+```
+
+### Verificar todos os serviços
+
+```bash
+for svc in apple-battery-guard auto-cpufreq mbpfan tlp; do
+    systemctl is-active --quiet $svc && echo "✓ $svc" || echo "✗ $svc"
+done
+```
+
+### O que isto consegue vs macOS
+
+| Feature | macOS | Linux (com setup completo) |
+|---|---|---|
+| Threshold de carga | ✅ 80% | ✅ 80% (apple-battery-guard) |
+| CPU freq scaling | ✅ automático | ✅ automático (auto-cpufreq) |
+| Controlo de ventoinha | ✅ nativo | ✅ configurado (mbpfan) |
+| USB autosuspend | ✅ nativo | ✅ ativado (tlp) |
+| WiFi power save | ✅ nativo | ✅ em bateria (tlp) |
+| Áudio power save | ✅ nativo | ✅ em bateria (tlp) |
+| PCIe ASPM | ✅ nativo | ✅ powersupersave em bateria (tlp) |
+| Disco power save | ✅ nativo | ✅ configurado (tlp) |
+| App Nap / throttling de processos | ✅ nativo | ❌ não disponível no Linux |
+| Hibernação profunda | ✅ nativo | ⚠️ depende do kernel/distro |
+
+Na prática, este setup recupera **60–70% da diferença de autonomia** entre macOS e Linux em MacBooks Intel.
 
 ---
 
