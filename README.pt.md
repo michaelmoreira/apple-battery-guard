@@ -248,10 +248,36 @@ cd apple-battery-guard
 makepkg -si
 ```
 
-O pacote AUR inclui:
-- Binário `abg` em `/usr/bin/`
-- Configuração de exemplo em `/etc/apple-battery-guard/apple-battery-guard.toml`
-- Serviço systemd em `/usr/lib/systemd/system/apple-battery-guard.service`
+Após a instalação, aparece uma mensagem post-install com os dois passos de configuração:
+
+```
+╔══════════════════════════════════════════════════════════════╗
+║              apple-battery-guard instalado                   ║
+╠══════════════════════════════════════════════════════════════╣
+║                                                              ║
+║  1. Ativar o serviço de threshold de bateria:               ║
+║     sudo systemctl enable --now apple-battery-guard         ║
+║                                                              ║
+║  2. (Opcional) Setup completo de gestão de energia:         ║
+║     Instala auto-cpufreq + mbpfan + tlp com configurações   ║
+║     otimizadas para MacBook Intel.                          ║
+║                                                              ║
+║     sudo apple-battery-guard-setup-power                    ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+```
+
+O pacote AUR instala:
+
+| Caminho | Descrição |
+|---|---|
+| `/usr/bin/abg` | Binário CLI principal |
+| `/usr/bin/apple-battery-guard-setup-power` | Script opcional de setup de gestão de energia |
+| `/etc/apple-battery-guard/apple-battery-guard.toml` | Ficheiro de configuração principal |
+| `/usr/share/apple-battery-guard/auto-cpufreq.conf` | Config de frequência CPU para auto-cpufreq |
+| `/usr/share/apple-battery-guard/mbpfan.conf` | Config de controlo de ventoinha para mbpfan |
+| `/usr/share/apple-battery-guard/tlp-macbook.conf` | Config de poupança de energia para tlp |
+| `/usr/lib/systemd/system/apple-battery-guard.service` | Unidade de serviço systemd |
 
 > **Nota:** `applesmc-next-dkms` é listado como dependência opcional. O AUR helper perguntará se queres instalá-lo. Instala se `cat /sys/class/power_supply/BAT0/charge_control_end_threshold` devolver erro.
 
@@ -342,11 +368,23 @@ O `apple-battery-guard` gere o threshold de carga. Para uma experiência de gest
 
 ### Setup automático (recomendado)
 
+**Se instalaste via AUR** (o script já está no teu sistema):
+```bash
+sudo apple-battery-guard-setup-power
+```
+
+**Se estás a correr a partir do repositório:**
 ```bash
 sudo bash scripts/setup-power.sh
 ```
 
-O script instala e configura as três ferramentas, ativa os serviços, desativa ferramentas conflituantes (`power-profiles-daemon`) e verifica que tudo está a correr.
+O script:
+1. Deteta o teu gestor de pacotes (pacman, apt, dnf)
+2. Instala auto-cpufreq, mbpfan, tlp se não estiverem presentes
+3. Aplica as configurações otimizadas para MacBook incluídas
+4. Desativa o `power-profiles-daemon` se estiver ativo (conflito com auto-cpufreq)
+5. Ativa os três serviços
+6. Verifica que cada serviço está a correr e mostra o estado atual da bateria
 
 ### Setup manual
 
@@ -423,6 +461,41 @@ done
 | Hibernação profunda | ✅ nativo | ⚠️ depende do kernel/distro |
 
 Na prática, este setup recupera **60–70% da diferença de autonomia** entre macOS e Linux em MacBooks Intel.
+
+### Ficheiros de configuração incluídos
+
+Todos os ficheiros estão pré-ajustados para o **MacBook Air 2017 (i5-5350U, MacBookAir7,2)** e instalados em `/usr/share/apple-battery-guard/` pelo pacote AUR.
+
+**`auto-cpufreq.conf`** — Escalonamento de frequência do CPU
+
+```ini
+[charger]
+governor = performance
+scaling_max_freq = 2900000   # turbo (2,9 GHz)
+turbo = auto
+
+[battery]
+governor = powersave
+scaling_max_freq = 1800000   # frequência base (1,8 GHz)
+turbo = auto
+```
+
+**`mbpfan.conf`** — Controlo da ventoinha
+
+```ini
+min_fan1_speed = 1200        # RPM — mínimo do hardware
+max_fan1_speed = 6500        # RPM — máximo do hardware
+low_temp = 55                # °C — ventoinha fica no mínimo abaixo disto
+high_temp = 65               # °C — ventoinha começa a subir aqui
+max_temp = 85                # °C — ventoinha vai ao máximo imediatamente
+polling_interval = 5         # segundos
+```
+
+**`tlp-macbook.conf`** — Poupança de energia do sistema (drop-in em `/etc/tlp.d/10-macbook.conf`)
+
+Cobre: timers de disco em idle, SATA link power, AHCI runtime PM, PCIe ASPM (`powersupersave` em bateria), WiFi power save (só em bateria), áudio power save (só em bateria), USB autosuspend, NMI watchdog desativado.
+
+Governor CPU e thresholds de bateria estão **intencionalmente comentados** — geridos pelo auto-cpufreq e pelo apple-battery-guard respetivamente.
 
 ---
 
@@ -686,14 +759,20 @@ sudo systemctl stop apple-battery-guard
 ### AUR (Arch / Manjaro)
 
 ```bash
-# Remover o pacote (binário, config, serviço systemd)
+# Remover o pacote (binário, configs, scripts, serviço systemd)
 sudo pacman -R apple-battery-guard
 
-# Opcionalmente remover o ficheiro de configuração (o pacman mantém-no por padrão)
+# Opcionalmente remover o ficheiro de config do utilizador (o pacman mantém-no por padrão)
 sudo rm -rf /etc/apple-battery-guard
+
+# Opcionalmente remover as configs partilhadas (configs do setup-power.sh)
+sudo rm -rf /usr/share/apple-battery-guard
 
 # Opcionalmente remover o applesmc-next se o instalaste
 sudo pacman -R applesmc-next-dkms
+
+# Opcionalmente remover as ferramentas complementares se as instalaste
+sudo pacman -R auto-cpufreq mbpfan tlp
 ```
 
 ### Compilado da fonte
@@ -729,22 +808,27 @@ Após desinstalar, a bateria voltará a carregar até 100% no próximo ciclo de 
 ```
 apple-battery-guard/
 ├── src/
-│   ├── main.rs      — Entrypoint: parse de argumentos CLI, despacha subcomandos
-│   ├── battery.rs   — Abstração sobre sysfs: detect, status, set_charge_threshold
-│   ├── config.rs    — Struct Config + deserialização TOML + validação
-│   ├── daemon.rs    — Loop principal, scheduler, Unix socket, signal handling
-│   ├── systemd.rs   — sd_notify, watchdog keepalive
-│   └── tui.rs       — Dashboard ratatui com gauge, estado e threshold
+│   ├── main.rs        — Entrypoint: parse de argumentos CLI, despacha subcomandos
+│   ├── battery.rs     — Abstração sobre sysfs: detect, status, set_charge_threshold
+│   ├── config.rs      — Struct Config + deserialização TOML + validação
+│   ├── daemon.rs      — Loop principal, scheduler, Unix socket, signal handling
+│   ├── systemd.rs     — sd_notify, watchdog keepalive
+│   └── tui.rs         — Dashboard ratatui com gauge, estado e threshold
 ├── modules/
-│   └── applesmc-next/   — git submodule: módulo DKMS para kernels antigos
+│   └── applesmc-next/ — git submodule: módulo DKMS para kernels antigos
 ├── scripts/
-│   └── setup-kernel-module.sh  — deteta e instala applesmc-next se necessário
+│   ├── setup-kernel-module.sh  — deteta e instala applesmc-next se necessário
+│   └── setup-power.sh          — instala e configura auto-cpufreq + mbpfan + tlp
 ├── config/
-│   └── apple-battery-guard.toml
+│   ├── apple-battery-guard.toml   — configuração principal do daemon
+│   ├── auto-cpufreq.conf          — config de frequência CPU (MacBook Air 2017)
+│   ├── mbpfan.conf                — config de controlo de ventoinha (MacBook Air 2017)
+│   └── tlp-macbook.conf           — config de poupança de energia (drop-in)
 ├── systemd/
 │   └── apple-battery-guard.service
 └── packaging/
     ├── PKGBUILD
+    ├── apple-battery-guard.install  — hook post-install (AUR)
     └── apple-battery-guard.spec
 ```
 
