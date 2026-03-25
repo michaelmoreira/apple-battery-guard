@@ -1,5 +1,7 @@
 # apple-battery-guard
 
+🇵🇹 Português | [🇬🇧 English](README.en.md)
+
 Daemon inteligente de gestão de bateria para **MacBooks Intel com Linux**.
 
 MacBooks com Linux carregam a bateria sempre até 100%, degradando-a prematuramente. O macOS limita automaticamente a 80% via Apple SMC. Este projeto replica esse comportamento no Linux através de sysfs, sem patches de kernel nem dependências pesadas.

@@ -1,5 +1,7 @@
 # apple-battery-guard
 
+[🇵🇹 Português](README.md) | 🇬🇧 English
+
 Intelligent battery charge threshold manager for **Intel MacBooks running Linux**.
 
 MacBooks on Linux charge the battery to 100% every time, prematurely degrading it. macOS automatically limits charging to 80% via the Apple SMC. This project replicates that behavior on Linux through sysfs — no kernel patches, no heavy dependencies.
