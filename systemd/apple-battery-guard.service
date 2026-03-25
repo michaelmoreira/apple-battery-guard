@@ -1,0 +1,31 @@
+[Unit]
+Description=Apple Battery Guard — charge threshold manager for MacBooks on Linux
+Documentation=https://github.com/moreira/apple-battery-guard
+After=multi-user.target
+Wants=multi-user.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/abg --config /etc/apple-battery-guard/apple-battery-guard.toml daemon
+Restart=on-failure
+RestartSec=5s
+
+# Watchdog: reinicia se o daemon não enviar WATCHDOG=1 em 2× interval_secs
+WatchdogSec=90s
+NotifyAccess=main
+
+# Diretório de runtime para o Unix socket
+RuntimeDirectory=apple-battery-guard
+RuntimeDirectoryMode=0750
+
+# Acesso ao sysfs da bateria (requer permissão no ficheiro via udev ou polkit)
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/sys/class/power_supply
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=apple-battery-guard
+
+[Install]
+WantedBy=multi-user.target

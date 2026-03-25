@@ -1,0 +1,23 @@
+[package]
+name = "apple-battery-guard"
+version = "0.1.0"
+edition = "2021"
+description = "Intelligent battery charge threshold manager for MacBooks on Linux"
+license = "MIT"
+
+[[bin]]
+name = "abg"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+ratatui = "0.28"
+crossterm = "0.28"
+libc = "0.2"
+log = "0.4"
+env_logger = "0.11"
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"

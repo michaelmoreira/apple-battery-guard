@@ -1,0 +1,23 @@
+# apple-battery-guard — configuração
+# Instalar em: /etc/apple-battery-guard/apple-battery-guard.toml
+
+[battery]
+# Threshold de fim de carga em condições normais (1–100).
+# 80% é o valor recomendado para maximizar a longevidade da bateria.
+charge_end_threshold = 80
+
+[daemon]
+# Intervalo de verificação em segundos.
+interval_secs = 30
+
+# Unix socket para comunicação com o CLI (abg status).
+socket_path = "/run/apple-battery-guard/daemon.sock"
+
+[full_charge]
+# Ativar "full charge day": um dia por semana a bateria carrega até 100%.
+# Útil para calibração e para dias de uso intensivo fora de casa.
+enabled = false
+
+# Dia da semana para carga completa: sunday, monday, tuesday,
+# wednesday, thursday, friday, saturday
+weekday = "sunday"
