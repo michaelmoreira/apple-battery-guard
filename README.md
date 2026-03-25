@@ -15,6 +15,12 @@ Tested on a **2017 MacBook Air (Intel) running Manjaro**. Works on any systemd-b
 - [The Problem](#the-problem)
 - [How It Works](#how-it-works)
 - [Requirements](#requirements)
+  - [Check Kernel Support](#check-kernel-support)
+- [Kernel Module (applesmc-next)](#kernel-module-applesmc-next)
+  - [What It Is](#what-it-is)
+  - [Automatic Setup (Recommended)](#automatic-setup-recommended)
+  - [Manual Installation](#manual-installation)
+  - [Keeping the Submodule Up to Date](#keeping-the-submodule-up-to-date)
 - [Installation](#installation)
   - [Arch Linux / Manjaro (AUR)](#arch-linux--manjaro-aur)
   - [Other Distributions (Build from Source)](#other-distributions-build-from-source)
@@ -79,18 +85,122 @@ The `applesmc` driver on recent kernels (≥ 5.4) exposes the `charge_control_en
 
 ### Software
 - Linux with systemd
-- Kernel ≥ 5.4 with `charge_control_end_threshold` support **or** the `applesmc-next` DKMS module
+- Kernel ≥ 5.4 with `charge_control_end_threshold` support **or** the `applesmc-next` DKMS module (bundled — see below)
 - Rust ≥ 1.70 (only required to build from source)
+- `dkms` and kernel headers (only required if `applesmc-next` installation is needed)
 
 ### Check Kernel Support
 
-```bash
-# If this returns a number (e.g. 80), your kernel already supports it
-cat /sys/class/power_supply/BAT0/charge_control_end_threshold
+Before installing, check whether your kernel already exposes the required sysfs file:
 
-# If "No such file or directory", install applesmc-next:
-# Arch/Manjaro: yay -S applesmc-next-dkms
+```bash
+cat /sys/class/power_supply/BAT0/charge_control_end_threshold
 ```
+
+| Output | Meaning |
+|---|---|
+| A number (e.g. `80`) | Kernel already supports it. Proceed directly to [Installation](#installation). |
+| `No such file or directory` | Kernel does not support it. Install `applesmc-next` first — see below. |
+
+---
+
+## Kernel Module (applesmc-next)
+
+### What It Is
+
+`applesmc-next` is a DKMS kernel module that patches the `applesmc` driver to expose `charge_control_end_threshold` on kernels that lack native support (typically kernels < 5.4 or distributions with older kernel configurations).
+
+This repository includes `applesmc-next` as a **git submodule** under `modules/applesmc-next`, so you do not need to find or download it separately. It is kept in sync with the upstream project and tested against new kernel versions as they are released.
+
+> **Upstream:** [github.com/c---/applesmc-next](https://github.com/c---/applesmc-next) — actively maintained, last updated July 2025 (v0.1.6, compatible with kernel 6.15).
+
+### Automatic Setup (Recommended)
+
+The bundled setup script detects whether support is already present. If not, it installs the module via DKMS automatically:
+
+```bash
+# 1. Clone the repository with submodules
+git clone --recurse-submodules https://github.com/michaelmoreira/apple-battery-guard.git
+cd apple-battery-guard
+
+# 2. Run the setup script
+bash scripts/setup-kernel-module.sh
+```
+
+The script will:
+1. Check if `/sys/class/power_supply/BAT0/charge_control_end_threshold` exists
+2. If it does — exit immediately, nothing to do
+3. If it does not — ask for confirmation, then:
+   - Verify that `dkms` is installed (and tell you how to install it if not)
+   - Copy the module source from `modules/applesmc-next` to `/usr/src/`
+   - Register and build the module via `dkms install`
+   - Load the module with `modprobe applesmc`
+   - Confirm that the threshold file is now available
+
+**Dependencies required by the script:**
+
+| Distribution | Command |
+|---|---|
+| Arch / Manjaro | `sudo pacman -S dkms linux-headers` |
+| Debian / Ubuntu | `sudo apt install dkms linux-headers-$(uname -r)` |
+| Fedora | `sudo dnf install dkms kernel-devel` |
+
+After installation, the module is managed by DKMS and will be **automatically recompiled on every kernel update**.
+
+### Manual Installation
+
+If you prefer to install `applesmc-next` without the script:
+
+**Option A — AUR (Arch / Manjaro only):**
+```bash
+yay -S applesmc-next-dkms
+sudo modprobe applesmc
+```
+
+**Option B — From the bundled submodule:**
+```bash
+# Initialize the submodule if you cloned without --recurse-submodules
+git submodule update --init
+
+# Read the version from dkms.conf
+VERSION=$(grep "^PACKAGE_VERSION=" modules/applesmc-next/dkms.conf | cut -d= -f2 | tr -d '"')
+
+# Copy source and install
+sudo cp -r modules/applesmc-next /usr/src/applesmc-next-${VERSION}
+sudo dkms install applesmc-next/${VERSION}
+sudo modprobe applesmc
+
+# Verify
+cat /sys/class/power_supply/BAT0/charge_control_end_threshold
+```
+
+**Option C — From upstream directly:**
+```bash
+git clone https://github.com/c---/applesmc-next.git
+cd applesmc-next
+VERSION=$(grep "^PACKAGE_VERSION=" dkms.conf | cut -d= -f2 | tr -d '"')
+sudo cp -r . /usr/src/applesmc-next-${VERSION}
+sudo dkms install applesmc-next/${VERSION}
+sudo modprobe applesmc
+```
+
+### Keeping the Submodule Up to Date
+
+The submodule is pinned to a specific commit of `applesmc-next`. To update it when a new upstream version is released:
+
+```bash
+# Update the submodule to the latest upstream commit
+git submodule update --remote modules/applesmc-next
+
+# Review what changed
+git diff modules/applesmc-next
+
+# Commit the updated pointer
+git add modules/applesmc-next
+git commit -m "chore: update applesmc-next submodule to latest"
+```
+
+If a new kernel breaks the module, check the upstream repository for fixes and update the submodule accordingly.
 
 ---
 
@@ -116,29 +226,39 @@ The AUR package includes:
 - A sample config at `/etc/apple-battery-guard/apple-battery-guard.toml`
 - A systemd service at `/usr/lib/systemd/system/apple-battery-guard.service`
 
+> **Note:** `applesmc-next-dkms` is listed as an optional dependency. The AUR helper will ask whether you want to install it. Install it if `cat /sys/class/power_supply/BAT0/charge_control_end_threshold` returns an error.
+
 ### Other Distributions (Build from Source)
 
 ```bash
 # 1. Install Rust (if not already installed)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# 2. Clone and build
-git clone https://github.com/michaelmoreira/apple-battery-guard.git
+# 2. Clone with submodules
+git clone --recurse-submodules https://github.com/michaelmoreira/apple-battery-guard.git
 cd apple-battery-guard
+
+# 3. Check kernel support and install applesmc-next if needed
+bash scripts/setup-kernel-module.sh
+
+# 4. Build
 cargo build --release
 
-# 3. Install
+# 5. Install
 sudo install -Dm755 target/release/abg /usr/local/bin/abg
 sudo install -Dm644 config/apple-battery-guard.toml \
     /etc/apple-battery-guard/apple-battery-guard.toml
 sudo install -Dm644 systemd/apple-battery-guard.service \
     /etc/systemd/system/apple-battery-guard.service
 
-# 4. Grant write access to sysfs (no permanent root required)
+# 6. Grant write access to sysfs (no permanent root required)
 echo 'ACTION=="add", SUBSYSTEM=="power_supply", KERNEL=="BAT[0-9]", \
   RUN+="/bin/chmod 666 /sys%p/charge_control_end_threshold"' \
   | sudo tee /etc/udev/rules.d/99-battery-threshold.rules
 sudo udevadm control --reload-rules && sudo udevadm trigger
+
+# 7. Enable and start the service
+sudo systemctl enable --now apple-battery-guard
 ```
 
 ---
@@ -249,16 +369,28 @@ The service uses `Type=notify` with a watchdog — if the daemon hangs, systemd 
 
 ## Architecture
 
-The project is organized into modules with well-defined responsibilities:
+### Project Structure
 
 ```
-src/
-├── main.rs      — Entrypoint: CLI argument parsing, subcommand dispatch
-├── battery.rs   — sysfs abstraction: detect, status, set_charge_threshold
-├── config.rs    — Config struct + TOML deserialization + validation
-├── daemon.rs    — Main loop, scheduler, Unix socket server, signal handling
-├── systemd.rs   — sd_notify, watchdog keepalive
-└── tui.rs       — ratatui dashboard with charge gauge, status, and threshold
+apple-battery-guard/
+├── src/
+│   ├── main.rs      — Entrypoint: CLI argument parsing, subcommand dispatch
+│   ├── battery.rs   — sysfs abstraction: detect, status, set_charge_threshold
+│   ├── config.rs    — Config struct + TOML deserialization + validation
+│   ├── daemon.rs    — Main loop, scheduler, Unix socket server, signal handling
+│   ├── systemd.rs   — sd_notify, watchdog keepalive
+│   └── tui.rs       — ratatui dashboard with charge gauge, status, and threshold
+├── modules/
+│   └── applesmc-next/   — git submodule: DKMS kernel module for older kernels
+├── scripts/
+│   └── setup-kernel-module.sh  — detects and installs applesmc-next if needed
+├── config/
+│   └── apple-battery-guard.toml
+├── systemd/
+│   └── apple-battery-guard.service
+└── packaging/
+    ├── PKGBUILD
+    └── apple-battery-guard.spec
 ```
 
 ### Design Decisions
@@ -267,9 +399,11 @@ src/
 
 **sysfs as the interface.** All hardware interaction goes through `/sys/class/power_supply/`. No ioctls, no direct SMC access, no kernel-specific code.
 
-**Graceful fallback.** I/O errors from sysfs are logged but never crash the daemon. If `charge_control_end_threshold` does not exist, the daemon warns and continues.
+**Graceful fallback.** I/O errors from sysfs are logged but never crash the daemon. If `charge_control_end_threshold` does not exist, the daemon warns and continues — it does not prevent the service from starting.
 
 **Unix socket for IPC.** The CLI (`abg status`) communicates with the daemon over a Unix socket using a simple line-based JSON protocol. No root required after initial setup.
+
+**Bundled kernel module.** `applesmc-next` is included as a git submodule rather than an external dependency. This guarantees reproducibility and allows the setup script to install the exact tested version without requiring network access beyond the initial clone.
 
 ### Daemon Flow
 
@@ -299,6 +433,10 @@ loop (every 30s) ─────────────────────
 ## Development
 
 ```bash
+# Clone with submodules
+git clone --recurse-submodules https://github.com/michaelmoreira/apple-battery-guard.git
+cd apple-battery-guard
+
 # Build
 cargo build
 
@@ -358,19 +496,6 @@ test daemon::tests::json_escape_handles_quotes_and_backslashes ... ok
 test result: ok. 30 passed; 0 failed; 0 ignored
 ```
 
-### Adding Support for Older Kernels (applesmc-next)
-
-If `cat /sys/class/power_supply/BAT0/charge_control_end_threshold` returns an error:
-
-```bash
-# Arch / Manjaro
-yay -S applesmc-next-dkms
-sudo modprobe applesmc
-
-# Verify after installation
-cat /sys/class/power_supply/BAT0/charge_control_end_threshold
-```
-
 ---
 
 ## FAQ
@@ -389,6 +514,18 @@ Possibly, if your kernel exposes `charge_control_end_threshold` for your battery
 
 **What happens if the daemon crashes?**
 systemd restarts it automatically (`Restart=on-failure`). The watchdog restarts it if it hangs for more than 90 seconds.
+
+**Do I need to install applesmc-next?**
+Only if your kernel does not expose `charge_control_end_threshold` natively. Run `cat /sys/class/power_supply/BAT0/charge_control_end_threshold` — if it returns a number, you do not need it.
+
+**Will applesmc-next break after a kernel update?**
+No. Because it is installed via DKMS, it is automatically recompiled for each new kernel version. If a new kernel changes an internal API that breaks compilation, update the submodule (`git submodule update --remote modules/applesmc-next`) to get the latest upstream fix.
+
+**I cloned the repo but `modules/applesmc-next` is empty. Why?**
+You cloned without initializing submodules. Run:
+```bash
+git submodule update --init
+```
 
 **Can I have two thresholds — one for home and one for travel?**
 Not yet, but it is on the roadmap. Current workaround: `abg set 90` before traveling and `abg set 80` when you return.
