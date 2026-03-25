@@ -1,47 +1,47 @@
 # apple-battery-guard
 
-🇵🇹 Português | [🇬🇧 English](README.en.md)
+[🇵🇹 Português](README.pt.md) | 🇬🇧 English
 
-Daemon inteligente de gestão de bateria para **MacBooks Intel com Linux**.
+Intelligent battery charge threshold manager for **Intel MacBooks running Linux**.
 
-MacBooks com Linux carregam a bateria sempre até 100%, degradando-a prematuramente. O macOS limita automaticamente a 80% via Apple SMC. Este projeto replica esse comportamento no Linux através de sysfs, sem patches de kernel nem dependências pesadas.
+MacBooks on Linux charge the battery to 100% every time, prematurely degrading it. macOS automatically limits charging to 80% via the Apple SMC. This project replicates that behavior on Linux through sysfs — no kernel patches, no heavy dependencies.
 
-Testado em **MacBook Air 2017 (Intel) com Manjaro**. Funciona em qualquer distro com systemd.
+Tested on a **2017 MacBook Air (Intel) running Manjaro**. Works on any systemd-based distribution.
 
 ---
 
-## Conteúdo
+## Table of Contents
 
-- [Problema](#problema)
-- [Como funciona](#como-funciona)
-- [Requisitos](#requisitos)
-- [Instalação](#instalação)
+- [The Problem](#the-problem)
+- [How It Works](#how-it-works)
+- [Requirements](#requirements)
+- [Installation](#installation)
   - [Arch Linux / Manjaro (AUR)](#arch-linux--manjaro-aur)
-  - [Outras distros (compilar da fonte)](#outras-distros-compilar-da-fonte)
-- [Configuração](#configuração)
-- [Utilização](#utilização)
-- [Serviço systemd](#serviço-systemd)
-- [Arquitetura](#arquitetura)
-- [Desenvolvimento](#desenvolvimento)
+  - [Other Distributions (Build from Source)](#other-distributions-build-from-source)
+- [Configuration](#configuration)
+- [Usage](#usage)
+- [systemd Service](#systemd-service)
+- [Architecture](#architecture)
+- [Development](#development)
 - [FAQ](#faq)
 
 ---
 
-## Problema
+## The Problem
 
-| Sistema | Comportamento padrão | Longevidade da bateria |
+| System | Default behavior | Battery longevity |
 |---|---|---|
-| macOS | Limita carga a 80% via SMC | Preservada |
-| Linux (sem este projeto) | Carrega sempre até 100% | Degradação acelerada |
-| Linux (com apple-battery-guard) | Limita ao threshold configurado | Preservada |
+| macOS | Limits charging to 80% via SMC | Preserved |
+| Linux (without this project) | Always charges to 100% | Accelerated degradation |
+| Linux (with apple-battery-guard) | Limits to configured threshold | Preserved |
 
-Carregar constantemente a 100% sujeita as células de lítio a tensão máxima, acelerando a degradação eletroquímica. Manter a carga entre 20–80% pode **duplicar o número de ciclos úteis** da bateria.
+Constantly charging to 100% subjects lithium cells to maximum voltage, accelerating electrochemical degradation. Keeping charge between 20–80% can **double the useful cycle count** of the battery.
 
-O driver `applesmc` em kernels recentes (≥ 5.4) expõe o ficheiro sysfs `charge_control_end_threshold`, mas não existe nenhum daemon que o gira de forma inteligente — até agora.
+The `applesmc` driver on recent kernels (≥ 5.4) exposes the `charge_control_end_threshold` sysfs file, but no daemon manages it intelligently — until now.
 
 ---
 
-## Como funciona
+## How It Works
 
 ```
 ┌─────────────────────────────────────────────┐
@@ -63,46 +63,46 @@ O driver `applesmc` em kernels recentes (≥ 5.4) expõe o ficheiro sysfs `charg
               └──────────┘
 ```
 
-1. O daemon arranca e **aplica imediatamente** o threshold configurado.
-2. A cada 30 segundos (configurável) verifica se o threshold está correto e reaplica se necessário.
-3. Comunica com o systemd via `sd_notify` (Type=notify + watchdog).
-4. Expõe o estado atual via **Unix socket** — o CLI lê daqui sem precisar de root.
-5. Suporta **"full charge day"**: um dia por semana carrega a 100% para calibração.
+1. The daemon starts and **immediately applies** the configured threshold.
+2. Every 30 seconds (configurable) it checks whether the threshold is correct and reapplies if needed.
+3. It communicates with systemd via `sd_notify` (Type=notify + watchdog).
+4. It exposes current state via a **Unix socket** — the CLI reads from it without requiring root.
+5. It supports a **"full charge day"**: once a week the battery charges to 100% for calibration.
 
 ---
 
-## Requisitos
+## Requirements
 
 ### Hardware
-- MacBook com chip Intel (Air, Pro, Mini — qualquer modelo Intel)
-- Testado em MacBook Air 2017
+- Intel MacBook (Air, Pro, Mini — any Intel model)
+- Tested on MacBook Air 2017
 
 ### Software
-- Linux com systemd
-- Kernel ≥ 5.4 com suporte a `charge_control_end_threshold` **ou** módulo `applesmc-next` (DKMS)
-- Rust ≥ 1.70 (só para compilar da fonte)
+- Linux with systemd
+- Kernel ≥ 5.4 with `charge_control_end_threshold` support **or** the `applesmc-next` DKMS module
+- Rust ≥ 1.70 (only required to build from source)
 
-### Verificar suporte do kernel
+### Check Kernel Support
 
 ```bash
-# Se devolver um número (ex: 80), o kernel já suporta
+# If this returns a number (e.g. 80), your kernel already supports it
 cat /sys/class/power_supply/BAT0/charge_control_end_threshold
 
-# Se "No such file or directory", instala applesmc-next:
+# If "No such file or directory", install applesmc-next:
 # Arch/Manjaro: yay -S applesmc-next-dkms
 ```
 
 ---
 
-## Instalação
+## Installation
 
 ### Arch Linux / Manjaro (AUR)
 
 ```bash
-# Com yay
+# With yay
 yay -S apple-battery-guard
 
-# Com paru
+# With paru
 paru -S apple-battery-guard
 
 # Manual
@@ -111,30 +111,30 @@ cd apple-battery-guard
 makepkg -si
 ```
 
-O pacote AUR inclui:
-- Binário `abg` em `/usr/bin/`
-- Configuração de exemplo em `/etc/apple-battery-guard/apple-battery-guard.toml`
-- Serviço systemd em `/usr/lib/systemd/system/apple-battery-guard.service`
+The AUR package includes:
+- The `abg` binary at `/usr/bin/`
+- A sample config at `/etc/apple-battery-guard/apple-battery-guard.toml`
+- A systemd service at `/usr/lib/systemd/system/apple-battery-guard.service`
 
-### Outras distros (compilar da fonte)
+### Other Distributions (Build from Source)
 
 ```bash
-# 1. Instalar Rust (se não tiveres)
+# 1. Install Rust (if not already installed)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# 2. Clonar e compilar
+# 2. Clone and build
 git clone https://github.com/michaelmoreira/apple-battery-guard.git
 cd apple-battery-guard
 cargo build --release
 
-# 3. Instalar
+# 3. Install
 sudo install -Dm755 target/release/abg /usr/local/bin/abg
 sudo install -Dm644 config/apple-battery-guard.toml \
     /etc/apple-battery-guard/apple-battery-guard.toml
 sudo install -Dm644 systemd/apple-battery-guard.service \
     /etc/systemd/system/apple-battery-guard.service
 
-# 4. Permissão de escrita no sysfs (sem root permanente)
+# 4. Grant write access to sysfs (no permanent root required)
 echo 'ACTION=="add", SUBSYSTEM=="power_supply", KERNEL=="BAT[0-9]", \
   RUN+="/bin/chmod 666 /sys%p/charge_control_end_threshold"' \
   | sudo tee /etc/udev/rules.d/99-battery-threshold.rules
@@ -143,189 +143,190 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 
 ---
 
-## Configuração
+## Configuration
 
-Ficheiro: `/etc/apple-battery-guard/apple-battery-guard.toml`
+File: `/etc/apple-battery-guard/apple-battery-guard.toml`
 
 ```toml
 [battery]
-# Threshold de fim de carga em condições normais (1–100).
-# 80% é o valor recomendado para maximizar a longevidade da bateria.
+# Charge end threshold under normal conditions (1–100).
+# 80% is the recommended value to maximize battery longevity.
 charge_end_threshold = 80
 
 [daemon]
-# Intervalo de verificação em segundos.
+# Polling interval in seconds.
 interval_secs = 30
 
-# Unix socket para comunicação com o CLI.
+# Unix socket path for CLI communication.
 socket_path = "/run/apple-battery-guard/daemon.sock"
 
 [full_charge]
-# "Full charge day": uma vez por semana carrega até 100%.
-# Útil para calibração e dias de uso intensivo fora de casa.
+# "Full charge day": charge to 100% once a week.
+# Useful for calibration and days with heavy use away from a power source.
 enabled = false
 
-# Dia da semana: sunday, monday, tuesday, wednesday, thursday, friday, saturday
+# Day of the week: sunday, monday, tuesday, wednesday, thursday, friday, saturday
 weekday = "sunday"
 ```
 
-### Opções de threshold recomendadas
+### Recommended Threshold Values
 
-| Uso | Threshold | Notas |
+| Use case | Threshold | Notes |
 |---|---|---|
-| Uso sedentário (sempre ligado) | 60–70% | Máxima longevidade |
-| Uso misto | 80% | Recomendado (padrão) |
-| Uso móvel frequente | 90% | Mais autonomia, menos durabilidade |
-| Calibração / viagem | 100% | Temporário via full_charge_day |
+| Sedentary use (always plugged in) | 60–70% | Maximum longevity |
+| Mixed use | 80% | Recommended (default) |
+| Frequent mobile use | 90% | More runtime, less durability |
+| Calibration / travel | 100% | Temporary via full_charge_day |
 
 ---
 
-## Utilização
+## Usage
 
 ```bash
-# Ver estado atual da bateria
+# Show current battery status
 abg status
 
-# Exemplo de output:
-# Bateria:   75%
-# Estado:    Discharging
+# Example output:
+# Battery:   75%
+# Status:    Discharging
 # Threshold: 80%
 
-# Definir threshold manualmente (requer permissão no sysfs)
+# Set threshold manually (requires sysfs write permission)
 abg set 80
 
-# Ver configuração efetiva
+# Show effective configuration
 abg config
 
-# Dashboard TUI interativo
+# Open the interactive TUI dashboard
 abg tui
 
-# Iniciar daemon em foreground (normalmente feito pelo systemd)
+# Start the daemon in the foreground (normally managed by systemd)
 abg daemon
 
-# Usar ficheiro de configuração alternativo
+# Use an alternate config file
 abg --config ~/.config/abg.toml status
 ```
 
-### Dashboard TUI
+### TUI Dashboard
 
-O comando `abg tui` abre um dashboard interativo no terminal:
+The `abg tui` command opens an interactive terminal dashboard:
 
 ```
 ╔══════════════════════════════════════╗
 ║         apple-battery-guard          ║
 ╠══════════════════════════════════════╣
-║  Carga                               ║
+║  Charge                              ║
 ║  ████████████████████░░░░  75%       ║
 ╠══════════════════════════════════════╣
-║  Estado: Discharging  Threshold: 80% ║
+║  Status: Discharging  Threshold: 80% ║
 ╚══════════════════════════════════════╝
-  q / Esc: sair
+  q / Esc: quit
 ```
 
-Atualiza a cada 5 segundos. Sair com `q` ou `Esc`.
+Refreshes every 5 seconds. Press `q` or `Esc` to quit.
 
 ---
 
-## Serviço systemd
+## systemd Service
 
 ```bash
-# Ativar e iniciar
+# Enable and start
 sudo systemctl enable --now apple-battery-guard
 
-# Ver estado
+# Check status
 systemctl status apple-battery-guard
 
-# Ver logs
+# Follow logs
 journalctl -u apple-battery-guard -f
 
-# Reiniciar após alterar configuração
+# Restart after changing configuration
 sudo systemctl restart apple-battery-guard
 ```
 
-O serviço usa `Type=notify` com watchdog — se o daemon travar, o systemd reinicia-o automaticamente ao fim de 90 segundos.
+The service uses `Type=notify` with a watchdog — if the daemon hangs, systemd will automatically restart it after 90 seconds.
 
 ---
 
-## Arquitetura
+## Architecture
 
-O projeto está organizado em módulos com responsabilidades bem definidas:
+The project is organized into modules with well-defined responsibilities:
 
 ```
 src/
-├── main.rs      — Entrypoint: parse de argumentos CLI, despacha subcomandos
-├── battery.rs   — Abstração sobre sysfs: detect, status, set_charge_threshold
-├── config.rs    — Struct Config + deserialização TOML + validação
-├── daemon.rs    — Loop principal, scheduler, Unix socket, signal handling
+├── main.rs      — Entrypoint: CLI argument parsing, subcommand dispatch
+├── battery.rs   — sysfs abstraction: detect, status, set_charge_threshold
+├── config.rs    — Config struct + TOML deserialization + validation
+├── daemon.rs    — Main loop, scheduler, Unix socket server, signal handling
 ├── systemd.rs   — sd_notify, watchdog keepalive
-└── tui.rs       — Dashboard ratatui com gauge, estado e threshold
+└── tui.rs       — ratatui dashboard with charge gauge, status, and threshold
 ```
 
-### Decisões de design
+### Design Decisions
 
-**Sem tokio.** O daemon usa `std::thread` + `std::sync`. O problema não justifica um runtime async — são dois threads: o loop de polling e o servidor de socket.
+**No tokio.** The daemon uses `std::thread` + `std::sync`. The problem does not warrant an async runtime — there are two threads: the polling loop and the socket server.
 
-**Sysfs como interface.** Toda a interação com hardware passa por `/sys/class/power_supply/`. Sem ioctls, sem acesso direto ao SMC, sem código específico de kernel.
+**sysfs as the interface.** All hardware interaction goes through `/sys/class/power_supply/`. No ioctls, no direct SMC access, no kernel-specific code.
 
-**Fallback gracioso.** Erros de I/O no sysfs são logados mas nunca crasham o daemon. Se `charge_control_end_threshold` não existir, o daemon avisa e continua.
+**Graceful fallback.** I/O errors from sysfs are logged but never crash the daemon. If `charge_control_end_threshold` does not exist, the daemon warns and continues.
 
-**Unix socket para IPC.** O CLI (`abg status`) comunica com o daemon via socket Unix com um protocolo de linha simples (JSON). Não requer root após setup inicial.
+**Unix socket for IPC.** The CLI (`abg status`) communicates with the daemon over a Unix socket using a simple line-based JSON protocol. No root required after initial setup.
 
-### Fluxo do daemon
+### Daemon Flow
 
 ```
-arranque
+startup
    │
    ▼
-Battery::detect()          ← escaneia /sys/class/power_supply/BAT*
+Battery::detect()          ← scans /sys/class/power_supply/BAT*
    │
    ▼
-apply_threshold()          ← escreve charge_control_end_threshold
+apply_threshold()          ← writes charge_control_end_threshold
    │
    ▼
 systemd::notify_ready()    ← READY=1
    │
    ▼
-loop (cada 30s) ───────────────────────────────────┐
+loop (every 30s) ──────────────────────────────────┐
    │                                                │
-   ├── battery.status()    ← lê capacity + status   │
-   ├── effective_threshold() ← normal ou 100% (FCD) │
-   ├── set_charge_threshold() ← só se necessário     │
+   ├── battery.status()    ← reads capacity + status │
+   ├── effective_threshold() ← normal or 100% (FCD) │
+   ├── set_charge_threshold() ← only if needed       │
    └── systemd::notify_watchdog() ← WATCHDOG=1 ─────┘
 ```
 
 ---
 
-## Desenvolvimento
+## Development
 
 ```bash
-# Compilar
+# Build
 cargo build
 
-# Correr todos os testes (sem hardware necessário)
+# Run all tests (no hardware required)
 cargo test
 
-# Correr testes de um módulo específico
+# Run tests for a specific module
 cargo test battery
 cargo test config
 
-# Linting (zero warnings tolerados)
+# Lint (zero warnings tolerated)
 cargo clippy -- -D warnings
 
-# Formatação
+# Format
 cargo fmt --check
 cargo fmt
 ```
 
-### Testes
+### Tests
 
-Os testes são 100% unitários e não requerem hardware. Simulam o sysfs com ficheiros temporários via `tempfile`:
+All tests are unit tests and require no hardware. They simulate sysfs using temporary files via `tempfile`:
 
 ```bash
 $ cargo test
-running 21 tests
+running 30 tests
 test battery::tests::detect_finds_battery ... ok
 test battery::tests::detect_ignores_non_battery_entries ... ok
+test battery::tests::detect_prefers_bat0_over_bat1 ... ok
 test battery::tests::set_threshold_fails_without_sysfs_file ... ok
 test battery::tests::set_threshold_rejects_above_100 ... ok
 test battery::tests::set_threshold_rejects_zero ... ok
@@ -338,27 +339,35 @@ test config::tests::defaults_are_sane ... ok
 test config::tests::empty_toml_uses_all_defaults ... ok
 test config::tests::invalid_toml_returns_error ... ok
 test config::tests::load_missing_file_returns_error ... ok
+test config::tests::load_or_default_returns_default_on_invalid_toml ... ok
 test config::tests::load_or_default_returns_default_when_missing ... ok
 test config::tests::parse_full_toml ... ok
 test config::tests::partial_toml_uses_defaults ... ok
 test config::tests::save_and_reload_roundtrip ... ok
+test config::tests::validation_rejects_empty_socket_path ... ok
 test config::tests::validation_rejects_threshold_above_100 ... ok
 test config::tests::validation_rejects_zero_interval ... ok
 test config::tests::validation_rejects_zero_threshold ... ok
+test daemon::tests::effective_threshold_full_charge_day_disabled ... ok
+test daemon::tests::effective_threshold_normal ... ok
+test daemon::tests::format_status_json_empty_state ... ok
+test daemon::tests::format_status_json_escapes_special_chars_in_status ... ok
+test daemon::tests::format_status_json_with_data ... ok
+test daemon::tests::json_escape_handles_quotes_and_backslashes ... ok
 
-test result: ok. 21 passed; 0 failed; 0 ignored
+test result: ok. 30 passed; 0 failed; 0 ignored
 ```
 
-### Adicionar suporte a kernels antigos (applesmc-next)
+### Adding Support for Older Kernels (applesmc-next)
 
-Se `cat /sys/class/power_supply/BAT0/charge_control_end_threshold` devolver erro:
+If `cat /sys/class/power_supply/BAT0/charge_control_end_threshold` returns an error:
 
 ```bash
 # Arch / Manjaro
 yay -S applesmc-next-dkms
 sudo modprobe applesmc
 
-# Verificar após instalar
+# Verify after installation
 cat /sys/class/power_supply/BAT0/charge_control_end_threshold
 ```
 
@@ -366,32 +375,32 @@ cat /sys/class/power_supply/BAT0/charge_control_end_threshold
 
 ## FAQ
 
-**O daemon requer root permanente?**
-Não. Apenas o setup inicial da regra udev precisa de root. Depois disso o daemon corre como utilizador normal com acesso ao sysfs via a regra udev.
+**Does the daemon require permanent root?**
+No. Only the initial udev rule setup requires root. After that, the daemon runs as a normal user with sysfs write access granted by the udev rule.
 
-**Funciona em MacBooks Apple Silicon (M1/M2/M3)?**
-Não. Este projeto é específico para MacBooks Intel. Os chips Apple Silicon têm uma arquitetura de gestão de energia completamente diferente.
+**Does it work on Apple Silicon MacBooks (M1/M2/M3)?**
+No. This project is specific to Intel MacBooks. Apple Silicon chips have a completely different power management architecture.
 
-**O threshold é persistido entre reboots?**
-Sim — o daemon aplica o threshold no arranque. Com o serviço systemd ativo, fica garantido após cada boot.
+**Is the threshold persisted across reboots?**
+Yes — the daemon applies the threshold on startup. With the systemd service enabled, it is guaranteed after every boot.
 
-**Posso usar em portáteis não-Apple com Linux?**
-Possivelmente, se o teu kernel expuser `charge_control_end_threshold` para a tua bateria. O `abg status` dirá se é suportado.
+**Can I use it on non-Apple Linux laptops?**
+Possibly, if your kernel exposes `charge_control_end_threshold` for your battery. `abg status` will tell you whether it is supported.
 
-**O que acontece se o daemon crashar?**
-O systemd reinicia-o automaticamente (`Restart=on-failure`). O watchdog reinicia-o se ficar suspenso por mais de 90 segundos.
+**What happens if the daemon crashes?**
+systemd restarts it automatically (`Restart=on-failure`). The watchdog restarts it if it hangs for more than 90 seconds.
 
-**Posso ter dois thresholds — um para casa e outro para viagem?**
-Ainda não, mas é um roadmap item. Workaround atual: `abg set 90` para viagem e `abg set 80` ao regressar.
-
----
-
-## Licença
-
-MIT — ver [LICENSE](LICENSE).
+**Can I have two thresholds — one for home and one for travel?**
+Not yet, but it is on the roadmap. Current workaround: `abg set 90` before traveling and `abg set 80` when you return.
 
 ---
 
-## Contribuições
+## License
 
-Issues e PRs são bem-vindos. Antes de abrir um PR, corre `cargo test && cargo clippy -- -D warnings` e confirma que passam sem erros.
+MIT — see [LICENSE](LICENSE).
+
+---
+
+## Contributing
+
+Issues and PRs are welcome. Before opening a PR, run `cargo test && cargo clippy -- -D warnings` and confirm everything passes cleanly.
